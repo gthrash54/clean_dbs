@@ -1,5 +1,6 @@
 import tdt
 import numpy as np
+from pathlib import Path
 def read_tdt(block_dir, t1=0, t2=0):
     """
     This function is used to read tdt files into workable data and is compatable with both python and Matlab
@@ -12,6 +13,12 @@ def read_tdt(block_dir, t1=0, t2=0):
         info: subject, block, experiment, duration, start
     Contact Garrett Thrash for any issues garrettthrash54@gmail.com
     """
+    block_dir = Path(block_dir)
+    if not block_dir.is_dir():
+        raise FileNotFoundError(f"Folder Not Found: {block_dir}, check path and spelling")
+    #a block folder holds its own .tsq file; a surgery folder (e.g. stage1 surgery) only holds block folders
+    if not any(block_dir.glob("*.tsq")):
+        raise FileNotFoundError(f"No .tsq file in {block_dir}, point to a single block folder (e.g. .../stage1 surgery/clinical_dbs1)")
     out = {"streams":{},"epocs":{},"info":{} }
     raw = tdt.read_block(block_dir,t1=t1,t2=t2)
     for name, s in raw.streams.items():
