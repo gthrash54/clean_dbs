@@ -61,6 +61,11 @@ for g = child_groups(meta, '/streams')
     end
     s.name = leaf(g.Name);
     s.channels = read_ds(h5file, g, 'channels');
+    for d = {g.Datasets.Name} %what each channel is (channel_names, channel_group, channel_target, ...), as text
+        if startsWith(d{1}, 'channel_')
+            s.(d{1}) = cellstr(string(h5read(h5file, [g.Name '/' d{1}])));
+        end
+    end
     ds = find_ds(g, 'data');
     n_total = ds.Dataspace.Size(1); %h5py writes channels x samples, MATLAB sees it flipped: samples x channels
     first = max(0, ceil((t1 - s.start_time) * s.fs - 1e-9)); %first sample at or after t1 (0-based)

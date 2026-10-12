@@ -131,6 +131,13 @@ python -m pytest tests
 
 They use small made-up files, so no recordings are needed.
 
+## What's in the cleaned folder
+
+- `<patient>/<stage>/<block>.h5`: one cleaned recording
+- `_cases/cases.csv`, `_cases/blocks.csv`: patient and recording info from the OR sheets (only rows with `verified` filled in get used)
+- `clean_report.csv`: what the last run did with every recording
+- `_about/`: the user guide PDF
+
 ## Things that will trip you up
 
 - **Wrong folder for TDT.** Point at a single block (like `clinical_dbs1`), not `stage1 surgery`. It'll tell you if you get this wrong.

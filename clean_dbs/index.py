@@ -3,9 +3,9 @@ import h5py
 import numpy as np
 import pandas as pd
 
-#columns copied from the case tables, only for rows Garrett has checked (verified not blank)
-CASE_COLUMNS = ["implant", "hemisphere", "target1", "target2"]
-BLOCK_COLUMNS = ["target", "leads_in_place", "stim_contacts", "microdrive_mm", "notes"]
+#columns copied from the case tables (every row; crosscheck_cases.py adds the check_* / status columns, see clean_dbs.crosscheck)
+CASE_COLUMNS = ["implant", "hemisphere", "target1", "target2", "check_implant"]
+BLOCK_COLUMNS = ["target", "leads_in_place", "stim_contacts", "microdrive_mm", "notes", "check_leads_in_place", "check_stim_contacts", "check_target"]
 
 
 def cleaned_files(cleaned_root):
@@ -22,14 +22,20 @@ def load_cases(cleaned_root):
     """
     Input:
     cleaned_root: top of the cleaned set, the tables are in <cleaned_root>/_cases/cases.csv and blocks.csv
-    Returns: (cases, blocks) tables with only the verified rows; empty tables if a file isn't there
+    Returns: (cases, blocks) tables with every row (the sheets were typed by AI, so check status before trusting a value);
+      empty tables if a file isn't there. Missing verified / status columns are added blank, so older tables still load.
+      status (from scripts/crosscheck_cases.py): match = the data agrees, conflict = it doesn't (see check_detail),
+      sheet_only = nothing in the data to check it with, no_data = recording not found; blank = never checked
     Everything is read as text so "2-3-4" or "11.910" come back exactly as typed
     """
     tables = []
     for name in ("cases.csv", "blocks.csv"):
         path = Path(cleaned_root) / "_cases" / name
-        t = pd.read_csv(path, dtype=str, keep_default_na=False) if path.is_file() else pd.DataFrame(columns=["study_id", "block", "verified"])
-        tables.append(t[t["verified"].str.strip() != ""] if "verified" in t else t.iloc[0:0])
+        t = pd.read_csv(path, dtype=str, keep_default_na=False) if path.is_file() else pd.DataFrame(columns=["study_id", "block"])
+        for col in ["verified", "status", "check_detail"]:
+            if col not in t:
+                t[col] = ""
+        tables.append(t)
     return tables[0], tables[1]
 
 
@@ -48,8 +54,11 @@ def build_index(cleaned_root):
       saturated_s: seconds where any channel sits at the amplifier ceiling (stim_monitor not counted); saturated_s_<type> per type
       n_gaps, gap_s: real BrainVision recording gaps and the seconds missing (NaN for tdt, no gap check there)
       dnu, clean_dbs_commit, uncommitted_changes, created
-      implant, hemisphere, target1, target2 (cases.csv) and target, leads_in_place, stim_contacts, microdrive_mm, block_notes (blocks.csv),
-      only filled where that row is verified; case_verified / block_verified are 1 if it was
+      implant, hemisphere, target1, target2, check_implant (cases.csv) and target, leads_in_place, stim_contacts, microdrive_mm, block_notes,
+      check_leads_in_place, check_stim_contacts, check_target (blocks.csv), from every row whether checked or not
+      case_status / block_status: that row's status from the cross-check (match, conflict, sheet_only, no_data; blank = no row or never checked)
+      case_detail / block_detail: the data evidence when there's a conflict
+      case_verified / block_verified: 1 if Garrett has checked that row by hand against the paper sheet
     Save it with index.to_csv(...) to open it in MATLAB (readtable) or Excel.
     """
     cleaned_root = Path(cleaned_root)
@@ -61,8 +70,13 @@ def build_index(cleaned_root):
         match = blocks[(blocks["study_id"] == row["patient"]) & (blocks["block"] == row["block"])]
         if "stage" in blocks: #if the table ever gets a stage column, use it so stage1/stage2 blocks with the same name don't mix
             match = match[match["stage"].str.replace(" ", "") == row["stage"]]
-        row["case_verified"] = int(len(case) == 1)
-        row["block_verified"] = int(len(match) == 1) #more than one matching row = ambiguous, so it's left out
+        one_case, one_block = len(case) == 1, len(match) == 1 #more than one matching row = ambiguous, so it's left out
+        row["case_status"] = case.iloc[0]["status"] if one_case else ""
+        row["block_status"] = match.iloc[0]["status"] if one_block else ""
+        row["case_detail"] = case.iloc[0]["check_detail"] if one_case else ""
+        row["block_detail"] = match.iloc[0]["check_detail"] if one_block else ""
+        row["case_verified"] = int(one_case and case.iloc[0]["verified"].strip() != "")
+        row["block_verified"] = int(one_block and match.iloc[0]["verified"].strip() != "")
         for col in CASE_COLUMNS:
             row[col] = case.iloc[0][col] if len(case) == 1 and col in case else ""
         for col in BLOCK_COLUMNS:
@@ -145,7 +159,7 @@ def _union_seconds(intervals):
     return round(float(total), 4)
 
 
-def find_clean(index, type=None, subtype=None, max_saturated_s=None, max_gap_s=None, min_duration=None, include_dnu=False, **columns):
+def find_clean(index, type=None, subtype=None, max_saturated_s=None, max_gap_s=None, min_duration=None, include_dnu=False, status=None, **columns):
     """
     Picks cleaned files out of an index from build_index.
     Input:
@@ -156,11 +170,13 @@ def find_clean(index, type=None, subtype=None, max_saturated_s=None, max_gap_s=N
     max_gap_s: at most this many seconds missing in BrainVision gaps (tdt files always pass)
     min_duration: at least this many seconds long
     include_dnu: False drops blocks marked do not use
+    status: only files whose blocks.csv row has this cross-check status (or one of a list), e.g. "match" or ["match", "sheet_only"]
+        match = the data agrees with the sheet, so filters on sheet columns (target, leads_in_place, ...) are safest with status="match"
     **columns: any other index column must equal the value (text is not case sensitive), or be one of a list,
-        e.g. target="STN", implant="dual", patient=["uh3021", "uh3003"], block_verified=1
-        case/block columns are blank unless verified, so these filters only ever match verified rows
+        e.g. target="STN", implant="dual", patient=["uh3021", "uh3003"], block_verified=1, check_target="match"
+        case/block columns come from every sheet row, checked or not
     Returns: list of .h5 paths
-    Example: find_clean(idx, type="lfp", target="STN", implant="dual", max_saturated_s=0)
+    Example: find_clean(idx, type="lfp", target="STN", implant="dual", max_saturated_s=0, status="match")
     """
     keep = pd.Series(True, index=index.index)
     if type is not None:
@@ -176,6 +192,8 @@ def find_clean(index, type=None, subtype=None, max_saturated_s=None, max_gap_s=N
         keep &= index["duration"] >= min_duration
     if not include_dnu:
         keep &= index["dnu"] == 0
+    if status is not None:
+        columns["block_status"] = status
     for column, wanted in columns.items():
         if column not in index:
             raise ValueError(f"{column!r} isn't a column of the index; columns are {list(index.columns)}")
@@ -243,6 +261,7 @@ def qc_block(h5_path, sample_s=1.0):
     #compare with the verified OR data sheet row, when there is one
     root, patient, block = h5_path.parents[2], h5_path.parents[1].name, h5_path.stem
     _, blocks = load_cases(root)
+    blocks = blocks[blocks["verified"].str.strip() != ""] #only hand-checked rows, load_cases now gives every row
     match = blocks[(blocks["study_id"] == patient) & (blocks["block"] == block)]
     if len(match) == 1 and match.iloc[0].get("leads_in_place", "").strip().isdigit():
         leads = int(match.iloc[0]["leads_in_place"])

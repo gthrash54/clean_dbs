@@ -128,6 +128,19 @@ x = single(ecos.data);       % 28 x samples, volts
 MATLAB only converts one level at a time, so you need a \code{struct()} at each level. Use \code{single()}, not \code{double()}; \code{double()} doubles the memory.
 
 % =============================================================================
+\section{What's in the cleaned folder}
+
+\begin{tabularx}{\textwidth}{@{}l Y@{}}
+\toprule
+\code{<patient>/<stage>/<block>.h5} & one cleaned recording (signals, events, stim table, flags, notes, provenance) \\
+\code{_cases/cases.csv} & one row per patient from the OR sheets: dual or single, hemisphere, targets, ECoG, EMG \\
+\code{_cases/blocks.csv} & one row per recording from the OR sheets: target, leads in place, stim contacts, depth, notes \\
+\code{clean_report.csv} & every recording from the last run: cleaned, skipped or failed, and why \\
+\code{_about/} & this guide \\
+\bottomrule
+\end{tabularx}
+
+% =============================================================================
 \section{Things that will trip you up}
 
 \begin{careful}{Before you trust a result}

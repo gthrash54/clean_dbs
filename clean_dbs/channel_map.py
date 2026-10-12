@@ -168,3 +168,58 @@ def _as_arrays(rows):
     return {"channel":np.asarray(rows["channel"], dtype=np.int64), "time":np.asarray(rows["time"], dtype=np.float64),
             "frequency":np.asarray(rows["frequency"], dtype=np.float64), "impedance":np.asarray(rows["impedance"], dtype=np.float64),
             "connected":np.asarray(rows["connected"], dtype=np.int8)}
+
+
+#uh3 TDT wiring, worked out from the data on 2026-10-11 (impedance + which channel goes flat while its contact is on the stimulator),
+#checked on 15 uh3 cases: ecos 1-12 = two 1x6 ECoG strips, 13-20 = lead 1 (implanted first), 21-28 = lead 2.
+#ECoG: anterior strip = 1-6, posterior = 7-12 (written on every OR sheet that records it).
+#Within a lead (Medtronic directional, lab numbers contacts 1-8): 1 = distal ring, 2/3/4 = lower segments, 5/6/7 = upper segments
+#(5 above 2, 6 above 3, 7 above 4), 8 = proximal ring. Still unknown: which end of a strip is contact 1, segment directions.
+#Old setup (uh3002, uh3003): separate ecog store (12) and dbs1 store (8), dbs1 ch k = contact k.
+TDT_WIRING_SOURCE = "inferred from data (impedance + stim, 2026-10-11), not yet confirmed by the lab"
+
+
+def channel_table(block, stream_name, device, n_channels, target1="", target2="", ecog=""):
+    """
+    Per-channel labels for one stream, so the cleaned file says what each channel is right next to the data.
+    Input:
+    block: a tdt block folder or a brainvision .vhdr file
+    stream_name, device: from the reader (e.g. "ecos", "ecogdbs")
+    n_channels: channels in the stream
+    target1, target2: the case's lead 1 / lead 2 targets from _cases/cases.csv (e.g. "STN", "GPi"); blank if unknown
+    ecog: the case's ECoG entry from cases.csv (e.g. "Ad-Tech 1x6; anterior 1-6; posterior 7-12", "none", "posterior strip only")
+    Returns: dictionary of lists, one entry per channel: name, group (ecog_strip1/ecog_strip2/lead1/lead2/emg/...), target, contact, source
+             or None if we don't know this stream's layout
+    """
+    #ecog strips: every OR sheet that records it says anterior = 1-6, posterior = 7-12, so that's the lab standard when a sheet is blank
+    ecog_l = ecog.lower()
+    said = "anterior 1-6" in ecog_l or "1-6 anterior" in ecog_l or "contacts 1-6 anterior" in ecog_l
+    strip_source = "OR sheet" if said else "lab standard (anterior 1-6, posterior 7-12 on every sheet that records it)"
+    def strips():
+        out = []
+        for side, name in (("a", "anterior"), ("p", "posterior")):
+            placed = not (ecog_l.startswith("none") or (f"{'posterior' if side == 'a' else 'anterior'} strip only" in ecog_l))
+            group = f"ecog_{name}" if placed else f"ecog_{name}_not_placed"
+            out += [(f"ecog_{side}{k}", group, "", str(k), strip_source) for k in range(1, 7)]
+        return out
+    def lead(n, number, target):
+        return [(f"lead{number}_c{c}", f"lead{number}", target, str(c), TDT_WIRING_SOURCE) for c in range(1, n + 1)]
+    rows = None
+    if device == "ecogdbs" and n_channels == 28:
+        rows = strips() + lead(8, 1, target1) + lead(8, 2, target2)
+    elif device == "ecogdbs" and n_channels == 20: #MER blocks: only lead 1 is recorded
+        rows = strips() + lead(8, 1, target1)
+    elif device == "ecog" and n_channels == 12:
+        rows = strips()
+    elif device == "dbs1" and n_channels == 8:
+        rows = lead(8, 1, target1)
+    elif Path(block).suffix.lower() == ".vhdr":
+        names = channel_names(block, stream_name, n_channels)
+        if names is None:
+            return None
+        group = [("ecog_" + n.split("_")[1][0]) if n.startswith("ecog_") else ("dbs" if n.startswith("dbs") else "emg") for n in names]
+        rows = [(n, g, "", "", "brainvision header (.vhdr)") for n, g in zip(names, group)]
+    if rows is None:
+        return None
+    return {"name":[r[0] for r in rows], "group":[r[1] for r in rows], "target":[r[2] for r in rows],
+            "contact":[r[3] for r in rows], "source":[r[4] for r in rows]}

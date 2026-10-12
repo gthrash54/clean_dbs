@@ -20,7 +20,8 @@ def save_h5(result, out_path, source_dir):
       /streams/<name>/data       channels x samples, float32, volts
                                  (MATLAB's h5read flips it: you get samples x channels)
       /streams/<name>/channels   channel numbers
-      /streams/<name>/channel_names  contact names when known (brainvision now, tdt once we have the wiring)
+      /streams/<name>/channel_names, channel_group, channel_target, channel_contact, channel_source
+                                 what each channel is (e.g. lead1_c3 / lead1 / STN / 3), and where that came from
       /streams/<name>            attributes: fs, start_time, device, units, type, subtype
       /epocs/<name>/onset, offset, data   attribute: type (video, stim, marker, other)
       /stim/time, source, voice, channel, amplitude_ua, period_ms, count, confirmed (+ time_clock for brainvision)
@@ -41,8 +42,9 @@ def save_h5(result, out_path, source_dir):
             g = f.create_group(f"streams/{name}")
             _write_array(g, "data", np.asarray(s["data"], dtype=np.float32), signal=True)
             _write_array(g, "channels", np.asarray(s["channels"], dtype=np.int64))
-            if "channel_names" in s: #h5py needs its own string type, plain numpy text arrays dont save
-                g.create_dataset("channel_names", data=np.asarray(s["channel_names"], dtype=h5py.string_dtype()))
+            for key in ("channel_names", "channel_group", "channel_target", "channel_contact", "channel_source"):
+                if key in s: #h5py needs its own string type, plain numpy text arrays dont save
+                    g.create_dataset(key, data=np.asarray(s[key], dtype=object), dtype=h5py.string_dtype())
             g.attrs["fs"] = float(s["fs"])
             g.attrs["start_time"] = float(s["start_time"])
             g.attrs["device"] = str(s.get("device", "unknown")) #which Synapse gizmo / rig recorded it, e.g. ecogdbs, emg, microphone

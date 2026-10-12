@@ -10,5 +10,5 @@ from .block_info import describe_block, missing_files, output_path
 from .flags import make_flags
 from .datatypes import stream_type, event_type, load_type
 from .index import build_index, find_clean, qc_block, qc_report, load_cases
-from .channel_map import channel_names, connected_contacts
+from .channel_map import channel_names, channel_table, connected_contacts
 from .stim_events import stim_events, bv_clock_time

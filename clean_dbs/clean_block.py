@@ -5,7 +5,8 @@ from clean_dbs.save_h5 import save_h5
 from clean_dbs.block_info import output_path
 from clean_dbs.flags import make_flags
 from clean_dbs.datatypes import stream_type, event_type
-from clean_dbs.channel_map import channel_names, connected_contacts
+from clean_dbs.channel_map import channel_table, connected_contacts
+import pandas as pd
 from clean_dbs.stim_events import stim_events, bv_clock_time
 
 def clean_block(block_dir, out_root):
@@ -24,11 +25,14 @@ def clean_block(block_dir, out_root):
         r = read_bv(block_dir)
     else:
         r = read_tdt(block_dir)
+    case_targets = _case_targets(out_root, block_dir) #lead 1 / lead 2 targets for this patient from the OR sheets
     for name, s in r["streams"].items(): #tag each stream lfp / mer / emg / audio / stim_monitor, see datatypes.py
         s["type"], s["subtype"] = stream_type(s["device"])
-        names = channel_names(block_dir, name, s["data"].shape[0]) #brainvision from the .vhdr; tdt is None until we have the rig wiring
-        if names is not None:
-            s["channel_names"] = names
+        table = channel_table(block_dir, name, s["device"], s["data"].shape[0], *case_targets) #what each channel is (see channel_map.py)
+        if table is not None:
+            s["channel_names"] = table["name"]
+            for key in ("group", "target", "contact", "source"):
+                s[f"channel_{key}"] = table[key]
     is_bv = block_dir.suffix.lower() == ".vhdr"
     for name, e in r["epocs"].items():
         e["type"] = event_type(name, is_bv)
@@ -45,3 +49,12 @@ def clean_block(block_dir, out_root):
         r["flags"][f"impedance_{name}"] = check
     save_h5(r, out_path, block_dir)
     return out_path
+
+def _case_targets(out_root, block_dir):
+    #lead 1 / lead 2 targets (e.g. STN, GPi) and the ecog entry from <cleaned root>/_cases/cases.csv, blank if the case isn't in the table
+    cases = Path(out_root) / "_cases" / "cases.csv"
+    if not cases.is_file():
+        return ("", "", "")
+    table = pd.read_csv(cases, dtype=str, keep_default_na=False)
+    row = table[table["study_id"].str.lower() == block_dir.parent.parent.name.lower()]
+    return (row["target1"].iloc[0], row["target2"].iloc[0], row["ecog"].iloc[0]) if len(row) else ("", "", "")

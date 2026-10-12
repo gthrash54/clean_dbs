@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 from pathlib import Path
+import shutil
 import pandas as pd
 from clean_dbs import find_all_blocks, clean_block, describe_block, output_path
 
@@ -17,6 +18,15 @@ parser.add_argument("--chunk", type=int, default=1, help="manifest rows per task
 parser.add_argument("--merge-reports", metavar="OUT_FOLDER", help="combine <out>/_reports/*.csv into <out>/clean_report.csv")
 args = parser.parse_args()
 
+
+def copy_guide(out_folder):
+    #the guide travels with the data, so whoever opens the cleaned folder finds how it was made without asking
+    guide = Path(__file__).resolve().parent.parent / "docs" / "user_guide.pdf"
+    if guide.is_file():
+        (Path(out_folder) / "_about").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(guide, Path(out_folder) / "_about" / "clean_dbs_user_guide.pdf")
+
+
 if args.merge_reports:
     out_folder = Path(args.merge_reports)
     parts = sorted((out_folder / "_reports").glob("clean_report_*.csv"))
@@ -31,6 +41,7 @@ if args.merge_reports:
     report = report.sort_values("row").reset_index(drop=True)
     print(report["status"].value_counts().to_string())
     report.to_csv(out_folder / "clean_report.csv", index=False)
+    copy_guide(out_folder)
     print(f"merged {len(parts)} task reports into {out_folder / 'clean_report.csv'}")
     sys.exit()
 
@@ -90,6 +101,8 @@ print(report)
 #saved next to the cleaned data so it outlives the script; pd.read_csv brings it back as a table
 report_path.parent.mkdir(parents=True, exist_ok=True)
 report.to_csv(report_path, index=False)
+if not args.manifest: #array tasks skip this, --merge-reports does it once at the end
+    copy_guide(out_folder)
 #nonzero exit makes sacct show FAILED for tasks with a failed block, so theyre easy to find
 if args.manifest and not report.empty and (report["status"] == "failed").any():
     sys.exit(1)
