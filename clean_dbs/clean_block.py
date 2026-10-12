@@ -4,7 +4,7 @@ from clean_dbs.read_tdt import read_tdt
 from clean_dbs.read_bv import read_bv
 from clean_dbs.save_h5 import save_h5
 
-def process_block(block_dir, out_root):
+def clean_block(block_dir, out_root):
     """
     Inputs:
     block_dir is the block to process: a tdt block folder (from find_tdt_blocks) or a .vhdr file (from find_bv_recordings)
