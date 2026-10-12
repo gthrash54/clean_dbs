@@ -41,8 +41,10 @@ Then make the venv the same way as in the README. Cheaha doesn't (as far as I kn
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc
 uv venv --python 3.12
-uv pip install -e .
+uv pip install --only-binary :all: -e .
 ```
+
+`--only-binary :all:` makes it use prebuilt packages. Cheaha's system is old, so building numpy or pandas from source there fails. With it you get numpy 2.2.6 and pandas 2.3.2, and the tests pass on those. Everything else on Cheaha is old too (bash 4.2, git 1.8.3). The scripts are written to work with those, so you don't need to load a newer git or bash. If something fails there that works on your own computer, an old tool is the first thing I'd suspect.
 
 If uv doesn't work there, use Cheaha's Anaconda module to get a Python and make a plain venv instead:
 
@@ -50,7 +52,7 @@ If uv doesn't work there, use Cheaha's Anaconda module to get a Python and make 
 module load Anaconda3
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install --only-binary :all: -e .
 ```
 
 Either way you end up with `clean_dbs/.venv`, which is what the job script switches on. Check it works:
@@ -74,11 +76,11 @@ Make a new remote called `box`, pick **Box** as the type, leave the rest blank, 
 Then copy **only the uh/UG study folders** (uh30xx and UG30xx, in any case). The Box inventory also holds other studies and some legacy folders named after patients; those must not be copied, so never copy the whole inventory folder. `Imaging` folders are left out too, because DICOM headers can carry patient names. rclone's include filters didn't pick folders reliably, so `scripts/copy_uhug.sh` lists the study folders first and copies them one by one:
 
 ```
-rclone lsf --dirs-only --max-depth 2 "box:UAB DBS Data/UAB DBS Raw Data" | grep -i -E '^[^/]+/(uh|ug)30[0-9]{2}/$' > $USER_DATA/dbs_raw/uhug_folders.txt
-while read d; do rclone copy --progress --exclude "**/[Ii]maging/**" "box:UAB DBS Data/UAB DBS Raw Data/$d" "$USER_DATA/dbs_raw/$d"; done < $USER_DATA/dbs_raw/uhug_folders.txt
+rclone lsf --dirs-only --max-depth 2 "box:UAB DBS Data/UAB DBS Raw Data" | grep -i -E '^[0-9.]+/(uh|ug)30[0-9]{2}/$' > $USER_DATA/dbs_raw/uhug_folders.txt
+while read d; do rclone copy --progress --ignore-case --exclude "imaging/**" --exclude "**/imaging/**" "box:UAB DBS Data/UAB DBS Raw Data/$d" "$USER_DATA/dbs_raw/$d"; done < $USER_DATA/dbs_raw/uhug_folders.txt
 ```
 
-The list should have 31 lines (the script prints the count; don't print the list itself, it has the Box number folders in it). It's kept in `$USER_DATA/dbs_raw`, never in the repo. The copy is big and slow, so run it as a job; that way it keeps going after you log out:
+The 31 uh/UG folders come to about 1 TB without imaging, so the cleaned set can be bigger than you'd guess too; scratch has plenty of room for it. The list should have 31 lines (the script prints the count; don't print the list itself, it has the Box number folders in it). It's kept in `$USER_DATA/dbs_raw`, never in the repo. The copy is big and slow, so run it as a job; that way it keeps going after you log out:
 
 ```
 cd $USER_DATA/clean_dbs
@@ -110,7 +112,7 @@ mkdir -p $USER_SCRATCH/clean_out
 python scripts/make_manifest.py $USER_DATA/dbs_raw $USER_SCRATCH/clean_out/manifest.csv --chunk 10
 ```
 
-It prints how many recordings it found, how many are missing signal files, how much signal there is, the biggest peak memory estimate (`est_peak_gb`, also a column, next to `signal_gb`), and the `--array` range to use. It stops with an error if two recordings would write the same cleaned file (names that differ only in capitals count as the same, since Mac and Windows treat them that way); fix those folder names first. `--chunk 10` means 10 blocks per task, so about 550 blocks becomes 55 tasks of roughly 5 minutes each. Add `--skip-missing` to leave out blocks that are missing their `.tev` / `.eeg` (it prints how many it skipped). Without it, those blocks just fail quickly and show up in the report as failed, so you can see what still needs copying.
+It prints how many recordings it found, how many are missing signal files, how much signal there is, the biggest peak memory estimate (`est_peak_gb`, also a column, next to `signal_gb`), and the `--array` range to use. It stops with an error if two recordings would write the same cleaned file (names that differ only in capitals count as the same, since Mac and Windows treat them that way); fix those folder names first. `--chunk 10` means 10 blocks per task, so about 550 blocks becomes 55 tasks of roughly 5 minutes each. Recordings inside an `Imaging` folder are skipped, so scans left over from an older copy don't matter. Add `--skip-missing` to leave out blocks that are missing their `.tev` / `.eeg` (it prints how many it skipped). Without it, those blocks just fail quickly and show up in the report as failed, so you can see what still needs copying.
 
 ### Put the case tables in the out folder
 

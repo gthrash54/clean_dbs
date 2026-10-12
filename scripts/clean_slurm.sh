@@ -42,7 +42,8 @@ source .venv/bin/activate
 export TZ=America/Chicago
 
 # the case tables go into every file (targets, case_status); stop here instead of in every task's python (clean.py checks too)
-if [ ! -f "$OUT/_cases/cases.csv" ] && [[ " ${EXTRA[*]} " != *" --no-cases "* ]]; then
+# ${EXTRA[@]+...} looks odd but is needed: cheaha's bash (4.2) calls an empty array "unbound" under set -u, newer bash doesn't
+if [ ! -f "$OUT/_cases/cases.csv" ] && [[ " ${EXTRA[*]+${EXTRA[*]}} " != *" --no-cases "* ]]; then
     echo "no $OUT/_cases/cases.csv, copy _cases (cases.csv, blocks.csv) into the out folder first" >&2
     exit 1
 fi
@@ -51,6 +52,6 @@ fi
 echo "task $SLURM_ARRAY_TASK_ID of job $SLURM_ARRAY_JOB_ID on $(hostname), started $(date)"
 
 # clean.py reads SLURM_ARRAY_TASK_ID itself to pick its rows of the manifest
-python scripts/clean.py --manifest "$MANIFEST" --chunk "$CHUNK" "${EXTRA[@]}" "$OUT"
+python scripts/clean.py --manifest "$MANIFEST" --chunk "$CHUNK" ${EXTRA[@]+"${EXTRA[@]}"} "$OUT" #same empty-array guard as above
 
 echo "finished $(date)"

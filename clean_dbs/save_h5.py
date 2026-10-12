@@ -241,8 +241,9 @@ def code_version():
     """
     repo = Path(__file__).resolve().parent.parent
     try:
-        commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        dirty = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout.strip() != ""
+        #cwd= instead of git -C: cheaha's system git (1.8.3) has no -C
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip() != ""
     except (OSError, subprocess.CalledProcessError):
         commit, dirty = "unknown", True
     return commit, dirty

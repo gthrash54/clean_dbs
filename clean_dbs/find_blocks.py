@@ -11,6 +11,8 @@ def find_tdt_blocks(folder, include_dnu=False):
 
     blocks = []
     for file in folder.rglob("*.tsq"):
+        if _in_imaging(file, folder):
+            continue
         if ("dnu" not in file.parent.name.lower()) or include_dnu: #lower() so "_DNU" and "_dnu" both count
             blocks.append(file.parent)
 
@@ -27,6 +29,8 @@ def find_bv_recordings(folder, include_dnu=False):
 
     recordings = []
     for file in folder.rglob("*.vhdr"):
+        if _in_imaging(file, folder):
+            continue
         if ("dnu" not in file.name.lower()) or include_dnu: #checks the file name since theres no block folder
             recordings.append(file)
 
@@ -41,3 +45,8 @@ def find_all_blocks(folder, include_dnu=False):
     Returns: List of every recording, tdt block folders and brainvision .vhdr files together, sorted
     """
     return sorted(find_tdt_blocks(folder, include_dnu) + find_bv_recordings(folder, include_dnu))
+
+
+def _in_imaging(file, folder):
+    #scans aren't recordings, and some copies on cheaha still have Imaging folders from before the copy filter was fixed
+    return any(part.lower() == "imaging" for part in file.relative_to(folder).parts[:-1])

@@ -157,6 +157,9 @@ def tev_problem(block_dir, headers=None):
     if needed == 0:
         return ""
     tev = Path(headers.tev_path)
+    if not tev.is_file(): #e.g. the .tev and .tsq names don't match (uh3010 mer1_macrostim_traj2: "macrostim" vs "marcostim")
+        found = sorted(t.name for t in block_dir.glob("*.tev"))
+        return f"no {tev.name}" + (f", but the folder has {', '.join(found)}: the .tev and .tsq names don't match" if found else ", copy the block again from Box")
     size = os.path.getsize(tev) if tev.is_file() else 0
     if size < needed:
         return f"{tev.name} is cut short: {size} bytes but the .tsq index needs {needed} ({needed - size} bytes missing), copy the block again from Box"
