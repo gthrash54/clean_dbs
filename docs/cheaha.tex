@@ -4,7 +4,7 @@
 \begin{document}
 \doctitle{Cleaning the Whole Inventory on Cheaha}{Running clean\_dbs on UAB's computing cluster}
 
-On a laptop, \code{scripts/clean.py} cleans one recording at a time. A full TDT block takes about 30\,s and writes about 1.3\,GB. Cleaning reads one window of the recording at a time, so it uses about 0.5\,GB of memory whatever the file size (an 8.4\,GB, 69-channel brainvision file cleans in 85\,s at 0.56\,GB, under a 4\,GB cap), so the whole inventory (about 550 recordings) is several hours and around a terabyte of disk. On Cheaha the same script runs as a \textbf{job array}: many copies run at once, and each copy cleans its own slice of a fixed list of recordings.
+On a laptop, \code{scripts/clean.py} cleans one recording at a time. A full TDT block takes about 30\,s and writes about 1.3\,GB. Cleaning reads one window of the recording at a time, so it uses about 0.5\,GB of memory whatever the file size (an 8.4\,GB, 69-channel brainvision file cleans in 85\,s at 0.56\,GB, under a 4\,GB cap), so on one computer the whole uh/UG inventory would take several hours. On Cheaha the first full run (574 uh/UG recordings in 58 tasks of 10) took about 15 minutes. On Cheaha the same script runs as a \textbf{job array}: many copies run at once, and each copy cleans its own slice of a fixed list of recordings.
 
 \begin{tip}{What SLURM is}
 Cheaha is shared by the whole university, so you don't run programs on it directly. You hand \textbf{SLURM}, the scheduler, a short job script that says what to run and how much memory and time it needs (\code{sbatch}), and SLURM runs it when computers are free. A \textbf{job array} is that script submitted many times at once; each copy (a \textit{task}) gets its own number and cleans its own rows of the list.
@@ -19,6 +19,10 @@ You need a Cheaha account (request one at \url{https://rc.uab.edu}). Log in with
 ssh <BlazerID>@cheaha.rc.uab.edu
 \end{codebox}
 You land on the \textbf{login node}, which everyone shares. Only do small things there (copying code, installing, submitting). The cleaning itself always goes through \code{sbatch}.
+
+If you fail to log in several times in a row, Cheaha can block your network for a while (ssh says ``Connection refused'', OnDemand says ``Proxy Error''). Don't keep retrying, that makes it longer. Wait about an hour or use another network, like a phone hotspot. The login banner has a Disk Quota Report, which is quicker than running \code{du} on Cheaha's file system.
+
+In a Linux terminal, copy is Ctrl+Shift+C and paste is Ctrl+Shift+V. Long pasted commands can break into two lines in a narrow window, so widen it first or put long paths in short variables (\code{M=$USER_SCRATCH/clean_out/manifest.csv}). A lone \code{sbatch} with no script after it just waits for input forever; press Ctrl+C and check \code{squeue -u $USER} before submitting again.
 
 % =============================================================================
 \section{2. Get the code and its Python}
@@ -44,6 +48,8 @@ source ~/.bashrc
 uv venv --python 3.12
 uv pip install --only-binary :all: -e .
 \end{codebox}
+The repo is private, so \code{git clone} and later \code{git pull} ask for a password. GitHub won't take your normal one. Make a fine-grained token on GitHub (Settings $>$ Developer settings) with read-only access to this repo's contents and paste that as the password. If git complains it ``cannot open display'', run \code{unset SSH_ASKPASS} first.
+
 \code{--only-binary :all:} makes it use prebuilt packages. Cheaha's system is old, so building numpy or pandas from source there fails. With it you get numpy 2.2.6 and pandas 2.3.2, and the tests pass on those. Everything else on Cheaha is old too (bash 4.2, git 1.8.3). The scripts are written to work with those, so you don't need to load a newer git or bash. If something fails there that works on your own computer, an old tool is the first thing I'd suspect.
 
 If uv doesn't work there, use Cheaha's Anaconda module instead:
@@ -125,7 +131,7 @@ The three things after the script are the manifest, the output folder, and the c
 \begin{careful}{The chunk has to match}
 Use the same chunk number you gave \code{make_manifest.py}, or the tasks won't line up with the array range. To cap how many tasks run at once, add \texttt{\%}, e.g.\ \texttt{-{}-array=0-54\%20}.
 \end{careful}
-Defaults (top of \code{scripts/clean_slurm.sh}): \code{express} partition (2 hour max), 1 hour per task, 4\,GB memory, 1 CPU. 4\,GB is enough for every recording: cleaning reads one window at a time, so a block peaks at about 0.5\,GB whatever its size (\code{est_peak_gb} in the manifest). Change any of them when you submit, e.g.\ \code{sbatch --time=02:00:00 ...}.
+Defaults (top of \code{scripts/clean_slurm.sh}): \code{express} partition (2 hour max), 1 hour per task, 4\,GB memory, 1 CPU. 4\,GB is enough for every recording: cleaning reads one window at a time, so a block peaks at about 0.5\,GB whatever its size (\code{est_peak_gb} in the manifest). In the first full run each task used 230 to 505\,MB and took 1 to 9 minutes, so the defaults have plenty of room. Change any of them when you submit, e.g.\ \code{sbatch --time=02:00:00 ...}.
 
 % =============================================================================
 \section{6. Watch it}
@@ -143,8 +149,19 @@ COMPLETED & every recording in that task cleaned (or was already done) \\
 FAILED & at least one recording failed; the reason is in the report and the \code{.out} log \\
 OUT\_OF\_MEMORY & needs more \code{--mem} \\
 TIMEOUT & needs more \code{--time} or a smaller chunk \\
+NODE\_FAIL & the computer died; Slurm reruns the task by itself \\
 \bottomrule
 \end{tabularx}
+
+\medskip
+The other recordings in a FAILED task still clean. sacct also lists extra step lines for each task (the ones with a dot in the JobID). To see one line per task:
+\begin{codebox}
+sacct -j <job id> --format=JobID,State,Elapsed,MaxRSS | grep -v '\.'
+\end{codebox}
+\code{NODE_FAIL} means the computer running that task died. You don't have to do anything: Slurm puts the task back in the queue and it runs again on another node. Recordings it already finished are skipped and a half-written one is redone, because a \code{.h5} only appears once it's complete. To see both tries of a task:
+\begin{codebox}
+sacct -j <job id>_<task> --duplicates --format=JobID,State,Elapsed,NodeList
+\end{codebox}
 
 \medskip
 Each task writes its own report to \code{<out>/_reports/clean_report_<task>_chunk<chunk>_<manifest hash>.csv} after every recording, so tasks never overwrite each other and a killed task still reports what it finished. The chunk size and a short hash of the manifest are in the name, so reports from another manifest never get mixed in. A task number past the end of the manifest prints a note and exits without error.
@@ -183,10 +200,23 @@ Then merge again. The merged report keeps the newest try of every row, so it's f
 
 % =============================================================================
 \section{9. Keep the results}
-Scratch deletes files after 90 days, so when the cleaned set looks right, copy it somewhere permanent:
+Scratch deletes files that haven't been touched in 90 days. When the merged report looks right, move the cleaned set somewhere permanent: your \code{$USER_DATA} (5\,TB) or, better, the lab's project folder (\code{/data/project/<lab>}, which the PI requests from Research Computing), so everyone in the lab can read it. Keep a second copy somewhere else too, for example on Box:
 \begin{codebox}
 rclone copy --progress $USER_SCRATCH/clean_out "box:<cleaned folder on Box>"
 \end{codebox}
+RC's storage docs don't say whether user or project folders are backed up, so don't count on it until RC says so.
+
+You don't have to move the data to look at it. Analysis can run on Cheaha too (JupyterLab or MATLAB through OnDemand, or \code{sbatch}).
+
+% =============================================================================
+\section{Looking at the data in JupyterLab}
+Once, from the \code{clean_dbs} folder:
+\begin{codebox}
+source .venv/bin/activate
+uv pip install ipykernel --only-binary :all:
+python -m ipykernel install --user --name clean_dbs --display-name "clean_dbs"
+\end{codebox}
+That only adds packages, it doesn't change the ones the cleaning uses, and \code{.venv} isn't tracked by git, so \code{git status} stays clean. Then at \url{https://rc.uab.edu} go to \textit{Interactive Apps} $>$ \textit{JupyterLab} and pick the \textbf{clean\_dbs} kernel. I'd use JupyterLab over Notebook, since it has a file browser, tabs, a terminal and a CSV viewer.
 
 % =============================================================================
 \section{Running it on a laptop instead}
@@ -197,6 +227,6 @@ python scripts/clean.py --manifest manifest.csv --task 0 --chunk 10 <out folder>
 The plain \code{python scripts/clean.py <raw folder> <out folder>} still cleans everything in one go.
 
 \vspace{1em}
-{\small\textit{Sources:} UAB Research Computing docs, checked October 2026: hardware and partitions, submitting jobs, storage, rclone, and Anaconda pages at \url{https://docs.rc.uab.edu}. Not yet checked on Cheaha itself: the uv installer, the exact ssh hostname, and the time per recording there. The copy runs as a job, so it doesn't depend on the login node. Run task 0 alone first and check its \code{Elapsed} and \code{MaxRSS} in \code{sacct}.\par}
+{\small\textit{Sources:} UAB Research Computing docs, checked October 2026: hardware and partitions, submitting jobs, storage, rclone, and Anaconda pages at \url{https://docs.rc.uab.edu}. Checked on Cheaha in October 2026: uv installs (with \code{--only-binary :all:}), the ssh hostname, and the run times and memory above. Still run task 0 alone first and check its \code{Elapsed} and \code{MaxRSS} in \code{sacct}.\par}
 
 \end{document}

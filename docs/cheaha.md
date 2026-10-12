@@ -2,7 +2,7 @@
 
 # Cleaning the whole inventory on Cheaha
 
-On my computer, `scripts/clean.py` cleans one block at a time. A full TDT block takes about 30 s and writes about 1.3 GB. Cleaning reads one window of the recording at a time, so it uses about 0.5 GB of RAM whatever the file size (an 8.4 GB, 69-channel brainvision file cleaned in 85 s at 0.56 GB, under a 4 GB cap), so the whole inventory (about 550 recordings) is several hours and around a terabyte of disk. Cheaha is UAB's computing cluster. It runs the cleaning as a SLURM **job array**: many copies of the same script run at once, and each copy (a "task") cleans its own few rows of a fixed list of blocks.
+On my computer, `scripts/clean.py` cleans one block at a time. A full TDT block takes about 30 s and writes about 1.3 GB. Cleaning reads one window of the recording at a time, so it uses about 0.5 GB of RAM whatever the file size (an 8.4 GB, 69-channel brainvision file cleaned in 85 s at 0.56 GB, under a 4 GB cap), so on one computer the whole uh/UG inventory would take several hours. On Cheaha the first full run (574 uh/UG recordings in 58 tasks of 10) took about 15 minutes. Cheaha is UAB's computing cluster. It runs the cleaning as a SLURM **job array**: many copies of the same script run at once, and each copy (a "task") cleans its own few rows of a fixed list of blocks.
 
 Don't put real patient folder names or paths in this repo, in issues, or in messages. The manifest and reports have patient IDs in them, so keep them in the out folder and never commit them.
 
@@ -16,6 +16,10 @@ You need a Cheaha account (request one at https://rc.uab.edu). Log in with your 
 - `ssh <BlazerID>@cheaha.rc.uab.edu` from a terminal.
 
 You land on the **login node**. It's shared by everyone, so only do small things there (copying code, installing, submitting jobs). The actual cleaning always goes through `sbatch`.
+
+If you fail to log in several times in a row, Cheaha can block your network for a while (ssh says "Connection refused", OnDemand says "Proxy Error"). Don't keep retrying, that makes it longer. Wait about an hour or use another network, like a phone hotspot. The login banner has a Disk Quota Report, which is quicker than running `du` on Cheaha's file system.
+
+In a Linux terminal, copy is Ctrl+Shift+C and paste is Ctrl+Shift+V. Long pasted commands can break into two lines in a narrow window, so widen it first or put long paths in short variables (`M=$USER_SCRATCH/clean_out/manifest.csv`). A lone `sbatch` with no script after it just waits for input forever; press Ctrl+C and check `squeue -u $USER` before submitting again.
 
 ## 2. Get the code and its Python
 
@@ -34,6 +38,8 @@ cd $USER_DATA
 git clone https://github.com/gthrash54/clean_dbs.git clean_dbs
 cd clean_dbs
 ```
+
+The repo is private, so `git clone` and later `git pull` ask for a password. GitHub won't take your normal one. Make a fine-grained token on GitHub (Settings > Developer settings) with read-only access to this repo's contents and paste that as the password. If git complains it "cannot open display", run `unset SSH_ASKPASS` first.
 
 Then make the venv the same way as in the README. Cheaha doesn't (as far as I know) have a uv module, but uv installs into your own folder without admin rights:
 
@@ -144,7 +150,7 @@ sbatch --array=0-54 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv 
 
 The three things after the script are the manifest, the out folder, and the chunk size. Anything after the chunk size goes to `clean.py` (for example `--force`, see step 8). The chunk **has to be the same number** you gave `make_manifest.py`, or the tasks won't line up with the `--array` range. To cap how many tasks run at the same time, add `%`, for example `--array=0-54%20`.
 
-The defaults are set at the top of `scripts/clean_slurm.sh`: `express` partition (2 hour max), 1 hour per task, 4 GB of memory, 1 CPU. 4 GB is enough for every recording: cleaning reads one window at a time, so a block peaks at about 0.5 GB whatever its size (`est_peak_gb` in the manifest). You can change any of them when you submit, for example `sbatch --time=02:00:00 ...`.
+The defaults are set at the top of `scripts/clean_slurm.sh`: `express` partition (2 hour max), 1 hour per task, 4 GB of memory, 1 CPU. 4 GB is enough for every recording: cleaning reads one window at a time, so a block peaks at about 0.5 GB whatever its size (`est_peak_gb` in the manifest). In the first full run each task used 230 to 505 MB and took 1 to 9 minutes, so the defaults have plenty of room. You can change any of them when you submit, for example `sbatch --time=02:00:00 ...`.
 
 ## 6. Watch it
 
@@ -154,7 +160,19 @@ sacct -j <job id> --format=JobID,State,Elapsed,MaxRSS       # how each task went
 tail logs/clean_dbs_<job id>_<task>.out                     # what one task printed
 ```
 
-`sbatch` prints the job id when you submit. In `sacct`, `COMPLETED` means every block in that task cleaned (or was already done), `FAILED` means at least one block in it failed (the reason is in the report and the `.out` log), `OUT_OF_MEMORY` means it needs more `--mem`, and `TIMEOUT` means it needs more `--time` or a smaller chunk.
+`sbatch` prints the job id when you submit. In `sacct`, `COMPLETED` means every block in that task cleaned (or was already done), `FAILED` means at least one block in it failed (the reason is in the report and the `.out` log), `OUT_OF_MEMORY` means it needs more `--mem`, and `TIMEOUT` means it needs more `--time` or a smaller chunk. The other recordings in a FAILED task still clean.
+
+sacct also lists extra step lines for each task (the ones with a `.` in the JobID). To see one line per task:
+
+```
+sacct -j <job id> --format=JobID,State,Elapsed,MaxRSS | grep -v '\.'
+```
+
+`NODE_FAIL` means the computer running that task died. You don't have to do anything: Slurm puts the task back in the queue and it runs again on another node. Blocks it already finished are skipped and a half-written one is redone, because a `.h5` only appears once it's complete. To see both tries of a task:
+
+```
+sacct -j <job id>_<task> --duplicates --format=JobID,State,Elapsed,NodeList
+```
 
 Each task writes its own report to `<out>/_reports/clean_report_<task>_chunk<chunk>_<manifest hash>.csv` after every block, so tasks never write over each other, and a task that gets killed still reports the blocks it finished. The chunk size and a short hash of the manifest are in the name, so reports from another manifest never get mixed in. A task number past the end of the manifest prints a note and exits without error.
 
@@ -191,11 +209,27 @@ Then merge again (step 7). The merged report keeps the newest try of every row, 
 
 ## 9. Keep the results
 
-Scratch deletes files after 90 days, so when the cleaned set looks right, copy it somewhere permanent, for example back to Box:
+Scratch deletes files that haven't been touched in 90 days. When the merged report looks right, move the cleaned set somewhere permanent: your `$USER_DATA` (5 TB) or, better, the lab's project folder (`/data/project/<lab>`, which the PI requests from Research Computing), so everyone in the lab can read it. Keep a second copy somewhere else too, for example on Box:
 
 ```
 rclone copy --progress $USER_SCRATCH/clean_out "box:<cleaned folder on Box>"
 ```
+
+RC's storage docs don't say whether user or project folders are backed up, so don't count on it until RC says so.
+
+You don't have to move the data to look at it. Analysis can run on Cheaha too (JupyterLab or MATLAB through OnDemand, or `sbatch`).
+
+## Looking at the data in JupyterLab
+
+Once, from the `clean_dbs` folder:
+
+```
+source .venv/bin/activate
+uv pip install ipykernel --only-binary :all:
+python -m ipykernel install --user --name clean_dbs --display-name "clean_dbs"
+```
+
+That only adds packages, it doesn't change the ones the cleaning uses, and `.venv` isn't tracked by git, so `git status` stays clean. Then at https://rc.uab.edu go to **Interactive Apps > JupyterLab** and pick the **clean_dbs** kernel. I'd use JupyterLab over Notebook, since it has a file browser, tabs, a terminal and a CSV viewer.
 
 ## Running it on your own computer instead
 
@@ -216,4 +250,4 @@ UAB Research Computing docs, checked October 2026. Things marked "not checked" I
 - Storage paths, scratch 90 day purge, Cheaha accepting PHI (Long-Term Storage does not): https://docs.rc.uab.edu/data_management/storage/
 - rclone with Box: https://docs.rc.uab.edu/data_management/transfer/rclone/
 - `module load Anaconda3`: https://docs.rc.uab.edu/workflow_solutions/using_anaconda/
-- Not checked: that the uv installer works on Cheaha, the exact ssh hostname, and the time per block on Cheaha's file system (30 s is on my computer). The copy runs as a job, so it doesn't depend on the login node. Run task 0 alone first and check its `Elapsed` and `MaxRSS` in `sacct` before submitting everything.
+- Checked on Cheaha in October 2026: uv installs work (with `--only-binary :all:`), the ssh hostname, and the run times and memory above. Still run task 0 alone first and check its `Elapsed` and `MaxRSS` in `sacct` before submitting everything.
