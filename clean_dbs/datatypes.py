@@ -22,6 +22,26 @@ DEVICE_TYPES = {
 }
 
 
+#event stores (tdt epocs/scalars, brainvision markers) -> type
+EVENT_TYPES = {
+    "Cam1":"video", #one event per camera frame, data = frame number, lines frames up with the neural clock
+    "PeA_":"stim", "PeB_":"stim", "PeC_":"stim", "CnA_":"stim", #eStim pulse events, one per stimulator channel
+    "eS1p":"stim_params", #24 stimulator settings per pulse; row 2 looks like amplitude (uA) and row 5 the contact, unverified
+    "Note":"other", "Tick":"other",
+}
+
+
+def event_type(name, is_bv=False):
+    """
+    Input: event store name (e.g. Cam1, PeA_, R15), is_bv for brainvision markers
+    Returns: video, stim, stim_params, marker or other
+    brainvision markers (R15, S13, ...) mean different things on different rigs, so they're all "marker" until checked
+    """
+    if is_bv:
+        return "other" if name == "NewSegment" else "marker"
+    return EVENT_TYPES.get(name, "other")
+
+
 def stream_type(device):
     """
     Input: device name (the "device" a reader puts on each stream)

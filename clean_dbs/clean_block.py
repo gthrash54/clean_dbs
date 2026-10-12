@@ -4,7 +4,7 @@ from clean_dbs.read_bv import read_bv
 from clean_dbs.save_h5 import save_h5
 from clean_dbs.block_info import output_path
 from clean_dbs.flags import make_flags
-from clean_dbs.datatypes import stream_type
+from clean_dbs.datatypes import stream_type, event_type
 
 def clean_block(block_dir, out_root):
     """
@@ -24,6 +24,14 @@ def clean_block(block_dir, out_root):
         r = read_tdt(block_dir)
     for s in r["streams"].values(): #tag each stream lfp / mer / emg / audio / stim_monitor, see datatypes.py
         s["type"], s["subtype"] = stream_type(s["device"])
+    is_bv = block_dir.suffix.lower() == ".vhdr"
+    for name, e in r["epocs"].items():
+        e["type"] = event_type(name, is_bv)
+    for name, sc in r["scalars"].items():
+        sc["type"] = event_type(name, is_bv)
+    #the video stays outside the .h5 (too big, and video tools cant read it from inside); record where it is, Cam1 lines frames up with the data
+    videos = sorted(block_dir.glob("*.avi")) if block_dir.is_dir() else []
+    r["info"]["video"] = ";".join("/".join(v.parts[-4:]) for v in videos) #from the study ID down, like source
     r["flags"] = make_flags(r, block_dir) #saturation, new segments, dnu, stored as notes, the data isn't changed
     save_h5(r, out_path, block_dir)
     return out_path

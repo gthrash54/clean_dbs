@@ -21,7 +21,8 @@ def save_h5(result, out_path, source_dir):
                                  (MATLAB's h5read flips it: you get samples x channels)
       /streams/<name>/channels   channel numbers
       /streams/<name>            attributes: fs, start_time, device, units, type, subtype
-      /epocs/<name>/onset, offset, data
+      /epocs/<name>/onset, offset, data   attribute: type (video, stim, marker, other)
+      /scalars/<name>/ts, data          data is parameters x events (e.g. eS1p stim settings per pulse)
       /info                      attributes: whatever the reader put in info
       /flags                     saturation_<stream>/channel,start,end; new_segments/time,missing,is_gap; attribute dnu (notes only, data unchanged)
       /                          attributes: provenance (source, clean_dbs version, package versions, when)
@@ -48,7 +49,16 @@ def save_h5(result, out_path, source_dir):
         for name, e in result["epocs"].items():
             g = f.create_group(f"epocs/{name}")
             for key, values in e.items():
-                _write_array(g, key, np.asarray(values, dtype=np.float64))
+                if isinstance(values, str): #labels like type go on as attributes
+                    g.attrs[key] = values
+                else:
+                    _write_array(g, key, np.asarray(values, dtype=np.float64))
+        f.create_group("scalars")
+        for name, sc in result.get("scalars", {}).items():
+            g = f.create_group(f"scalars/{name}")
+            _write_array(g, "ts", np.asarray(sc["ts"], dtype=np.float64))
+            _write_array(g, "data", np.asarray(sc["data"], dtype=np.float64)) #rows = parameters, columns = events
+            g.attrs["type"] = str(sc.get("type", "unknown"))
         info = f.create_group("info")
         for key, value in result["info"].items():
             info.attrs[key] = _attr_value(value)

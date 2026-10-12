@@ -26,7 +26,7 @@ def read_tdt(block_dir, t1=0, t2=0):
         raise FileNotFoundError(f"No .tev/.sev signal file in {block_dir}, only the index files were copied; get the full block from Box")
     if t1 < 0 or (t2 != 0 and t2 <= t1):
         raise ValueError(f"Bad time window t1={t1}, t2={t2}: need t1 >= 0 and t2 = 0 (to the end) or t2 > t1")
-    out = {"streams":{},"epocs":{},"info":{} }
+    out = {"streams":{},"epocs":{},"scalars":{},"info":{} }
     with contextlib.redirect_stdout(io.StringIO()): #tdt prints the full path, which includes the subject folder
         raw = tdt.read_block(block_dir,t1=t1,t2=t2)
     settings = _store_settings(block_dir)
@@ -38,6 +38,9 @@ def read_tdt(block_dir, t1=0, t2=0):
     #raw epocs are the event markers ie Cam 1
     for name, e in raw.epocs.items():
         out["epocs"][name] = {"onset":e.onset, "offset":e.offset, "data":e.data}# data is value tied to each event ie frame number for cam 1
+    #scalars: one vector of values per event, e.g. eS1p = the stimulator's 24 settings for every stim pulse (amplitude, contact, ...)
+    for name, sc in raw.scalars.items():
+        out["scalars"][name] = {"ts":np.asarray(sc.ts, dtype=np.float64), "data":np.atleast_2d(np.asarray(sc.data, dtype=np.float64))}
     out["info"] = {"subject":raw.info.subject, "block": raw.info.blockname, "experiment":raw.info.experiment, "start": raw.info.start_date.isoformat(),
                           "duration":raw.info.duration.total_seconds()}
     return out

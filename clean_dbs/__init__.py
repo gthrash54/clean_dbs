@@ -8,4 +8,4 @@ from .clean_block import clean_block
 from .find_blocks import find_all_blocks
 from .block_info import describe_block, missing_files, output_path
 from .flags import make_flags
-from .datatypes import stream_type, load_type
+from .datatypes import stream_type, event_type, load_type
