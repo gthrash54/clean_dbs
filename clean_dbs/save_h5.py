@@ -1,0 +1,98 @@
+import os
+import subprocess
+from datetime import datetime
+from importlib.metadata import version, PackageNotFoundError
+from pathlib import Path
+
+import h5py
+import numpy as np
+
+
+def save_h5(result, out_path, source_dir):
+    """
+    Saves a reader result (from read_tdt or read_bv) to one HDF5 file that opens in Python and MATLAB.
+    result = the dictionary from read_tdt / read_bv (streams, epocs, info)
+    out_path = where the .h5 goes (folders are made if needed)
+    source_dir = the raw block folder or .vhdr it came from, stored inside the file so you can trace it back
+    Returns: out_path
+
+    Layout inside the file:
+      /streams/<name>/data       channels x samples, float32, volts
+                                 (MATLAB's h5read flips it: you get samples x channels)
+      /streams/<name>/channels   channel numbers
+      /streams/<name>            attributes: fs, start_time
+      /epocs/<name>/onset, offset, data
+      /info                      attributes: whatever the reader put in info
+      /                          attributes: provenance (source, clean_dbs version, package versions, when)
+
+    It writes to <name>.h5.part first and only renames to .h5 once everything is written,
+    so a crashed or killed job never leaves a half-written .h5 that looks finished.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path = out_path.with_name(out_path.name + ".part")
+
+    with h5py.File(part_path, "w") as f:
+        for name, s in result["streams"].items():
+            g = f.create_group(f"streams/{name}")
+            _write_array(g, "data", np.asarray(s["data"], dtype=np.float32), signal=True)
+            _write_array(g, "channels", np.asarray(s["channels"], dtype=np.int64))
+            g.attrs["fs"] = float(s["fs"])
+            g.attrs["start_time"] = float(s["start_time"])
+        f.create_group("epocs")
+        for name, e in result["epocs"].items():
+            g = f.create_group(f"epocs/{name}")
+            for key, values in e.items():
+                _write_array(g, key, np.asarray(values, dtype=np.float64))
+        info = f.create_group("info")
+        for key, value in result["info"].items():
+            info.attrs[key] = _attr_value(value)
+        for key, value in _provenance(source_dir).items():
+            f.attrs[key] = value
+
+    os.replace(part_path, out_path)  #the rename is all-or-nothing on Windows, Mac and Linux
+    return out_path
+
+
+def _write_array(group, name, array, signal=False):
+    #compress the big signal arrays; chunks span all channels so reading a time window stays fast
+    if signal and array.size > 0:
+        chunk = (array.shape[0], min(array.shape[1], 65536))
+        group.create_dataset(name, data=array, chunks=chunk, compression="gzip", compression_opts=1, shuffle=True)
+    else:
+        group.create_dataset(name, data=array)
+
+
+def _attr_value(value):
+    #MATLAB reads Python True/False back as the text 'TRUE', so flags are stored as 0/1 numbers instead
+    if isinstance(value, (bool, np.bool_)):
+        return np.int8(value)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return value
+    return str(value)
+
+
+def _provenance(source_dir):
+    source_dir = Path(source_dir)
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout.strip() != ""
+    except (OSError, subprocess.CalledProcessError):
+        commit, dirty = "unknown", True
+    versions = {}
+    for package in ("numpy", "h5py", "tdt", "mne"):
+        try:
+            versions[f"version_{package}"] = version(package)
+        except PackageNotFoundError:
+            versions[f"version_{package}"] = "not installed"
+    #keep the source path from the study ID down (e.g. uh3021/stage1 surgery/clinical_dbs1), never the full path on someone's computer
+    source_files = [source_dir] if source_dir.is_file() else list(source_dir.iterdir()) if source_dir.is_dir() else []
+    return {
+        "source": "/".join(source_dir.parts[-3:]),
+        "source_bytes": int(sum(p.stat().st_size for p in source_files if p.is_file())),
+        "clean_dbs_commit": commit,
+        "clean_dbs_uncommitted_changes": np.int8(dirty),  #1 means the code that made this file wasn't committed yet
+        "created": datetime.now().isoformat(timespec="seconds"),
+        **versions,
+    }

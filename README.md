@@ -14,7 +14,7 @@ Open a terminal inside the `clean_dbs` folder (the outer one, with this README i
 
 ```
 uv venv --python 3.12
-uv pip install tdt numpy mne
+uv pip install tdt numpy mne h5py
 ```
 
 That makes a private Python for the toolbox in a folder called `.venv`. You only do this once.

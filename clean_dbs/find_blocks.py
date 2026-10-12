@@ -11,7 +11,7 @@ def find_tdt_blocks(folder, include_dnu=False):
 
     blocks = []
     for file in folder.rglob("*.tsq"):
-        if ("DNU" not in file.parent.name) or include_dnu:
+        if ("dnu" not in file.parent.name.lower()) or include_dnu: #lower() so "_DNU" and "_dnu" both count
             blocks.append(file.parent)
 
     return sorted(blocks)
