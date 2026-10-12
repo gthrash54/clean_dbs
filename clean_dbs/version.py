@@ -5,4 +5,5 @@
 #2: brainvision as typed streams (lead, ecog, emg, ...) with per-channel labels, read in windows; marker meanings, stim from markers.py
 #   and /sidecars; stream rail attribute (brainvision actiCHamp too); brainvision start as the vmrk clock; cohort in info for every file;
 #   CnA_ typed stim_params, PerB = voice B pulses, uneven tdt epocs trimmed (info epoc_warning); lead<N>_not_implanted and stage 2 labels
-CLEAN_VERSION = 2
+#3: lead contact coordinates per channel (channel_x/y/z/position, coord_space) from _cases/contacts.csv; analog_gain on tdt mer streams
+CLEAN_VERSION = 3

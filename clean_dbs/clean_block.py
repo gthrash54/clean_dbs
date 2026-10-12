@@ -9,6 +9,7 @@ from clean_dbs.channel_map import channel_table, connected_contacts, leads_impla
 import pandas as pd
 from clean_dbs.stim_events import stim_events, bv_clock_time
 from clean_dbs.markers import label_bv
+from clean_dbs.coords import contact_coords
 from clean_dbs.cohorts import cohort_of
 
 def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
@@ -41,6 +42,15 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
             s["channel_names"] = table.pop("name")
             for key, values in table.items():
                 s[f"channel_{key}"] = values
+            #where each lead contact was (Brainlab ACPC mm) during this recording, from _cases/contacts.csv; NaN = not known or not in yet
+            about_block = describe_block(block_dir)
+            xs, ys, zs, positions, space = contact_coords(out_root, about_block["patient"], about_block["block"],
+                                                          s["channel_group"], s["channel_contact"], about_block.get("stage", ""))
+            if space:
+                s["channel_x"], s["channel_y"], s["channel_z"], s["channel_position"] = xs, ys, zs, positions
+                s["coord_space"] = space
+        if s["type"] == "mer" and not is_bv: #AlphaOmega MER comes into the TDT ADC after the Neuro Omega analog out (total gain 4000, manual
+            s["analog_gain"] = 4000.0        #v1.4.6 p183/202): electrode volts = data / analog_gain. Data left as recorded; routing unconfirmed
     #the video stays outside the .h5 (too big, and video tools cant read it from inside); record where it is, Cam1 lines frames up with the data
     videos = sorted(block_dir.glob("*.avi")) if block_dir.is_dir() else []
     r["info"]["video"] = ";".join("/".join(v.parts[-4:]) for v in videos) #from the study ID down, like source

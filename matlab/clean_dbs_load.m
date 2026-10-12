@@ -71,7 +71,12 @@ for g = child_groups(meta, '/streams')
     s.channels = read_ds(h5file, g, 'channels');
     for d = {g.Datasets.Name} %what each channel is (channel_names, channel_group, channel_target, ...), as text
         if startsWith(d{1}, 'channel_')
-            s.(d{1}) = cellstr(string(h5read(h5file, [g.Name '/' d{1}])));
+            v = h5read(h5file, [g.Name '/' d{1}]);
+            if isnumeric(v) %channel_x/y/z: contact coordinates in mm (NaN = unknown)
+                s.(d{1}) = double(v(:));
+            else
+                s.(d{1}) = cellstr(string(v));
+            end
         end
     end
     ds = find_ds(g, 'data');

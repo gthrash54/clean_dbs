@@ -23,6 +23,8 @@ def save_h5(result, out_path, source_dir):
       /streams/<name>/data       channels x samples, float32, volts
                                  (MATLAB's h5read flips it: you get samples x channels)
       /streams/<name>/channels   channel numbers
+      /streams/<name>/channel_x, channel_y, channel_z, channel_position + attr coord_space: contact coordinates (lead channels, when recon exists)
+      /streams/<name> attr analog_gain: tdt mer streams, electrode volts = data / analog_gain
       /streams/<name>/channel_names, channel_group, channel_target, channel_contact, channel_source (+ brainvision: channel_subtype,
                                  channel_side, channel_muscle, channel_units): what each channel is (e.g. lead1_c3 / lead1 / STN / 3), and where that came from
       /streams/<name>            attributes: fs, start_time, device, units, type, subtype, rail (amplifier ceiling in volts, NaN = unknown)
@@ -90,8 +92,13 @@ class StreamWriter:
                 g.create_dataset("data", shape=(n_ch, n), dtype=np.float32)
             _write_array(g, "channels", np.asarray(s["channels"], dtype=np.int64))
             for key in s:
-                if key.startswith("channel_"): #h5py needs its own string type, plain numpy text arrays dont save
+                if key in ("channel_x", "channel_y", "channel_z"): #contact coordinates are numbers (NaN = unknown)
+                    _write_array(g, key, np.asarray(s[key], dtype=np.float64))
+                elif key.startswith("channel_"): #h5py needs its own string type, plain numpy text arrays dont save
                     g.create_dataset(key, data=np.asarray([str(v) for v in s[key]], dtype=object), dtype=h5py.string_dtype())
+            for key in ("coord_space", "analog_gain"): #only some streams have these
+                if key in s:
+                    g.attrs[key] = s[key] if isinstance(s[key], float) else str(s[key])
             g.attrs["fs"] = float(s["fs"])
             g.attrs["start_time"] = float(s["start_time"])
             g.attrs["device"] = str(s.get("device", "unknown")) #which Synapse gizmo / rig recorded it, e.g. ecogdbs, emg, microphone

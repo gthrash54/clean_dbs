@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 for tex in user_guide.tex cheaha.tex; do
-    latexmk -pdf -interaction=nonstopmode -halt-on-error -quiet "$tex"
+    latexmk -g -pdf -interaction=nonstopmode -halt-on-error -quiet "$tex" #-g: always rebuild fully so "Page x of N" is never "??"
 done
 latexmk -c -quiet user_guide.tex cheaha.tex #clean up the helper files, keep the PDFs
 rm -f *.listing

@@ -71,6 +71,16 @@ r["info"]      block name, start date and time (the rig's Birmingham clock time,
 
 To get the time of every sample in a stream: `start_time + np.arange(n_samples) / fs`. Don't assume the first sample is exactly at `t1`; on TDT it's a few microseconds after.
 
+## Channel labels and contact locations
+
+Every lead and ECoG channel in a cleaned file says what it is, right next to the data:
+
+- `channel_names`, `channel_group` (ecog_anterior, ecog_posterior, lead1, lead2, emg, ...), `channel_target` (STN, GPi, from the case table), `channel_contact`
+- contact numbering is the lab's 1-8 for every lead: 1 = bottom (distal) ring, 2/3/4 = lower segments, 5/6/7 = upper segments (5 sits above 2, 6 above 3, 7 above 4), 8 = top ring. On a Medtronic SenSight lead that's levels 0, 1a-c, 2a-c, 3. Which way each segment faces isn't recorded.
+- ECoG: anterior strip = 1-6, posterior = 7-12 (from the OR sheets). TDT lead 1 = 13-20, lead 2 = 21-28, worked out from impedance and stim in the data (`channel_source` says so) because the rig wiring isn't written down anywhere. Lead 1 is the lead implanted and stimulated first; stage 2 BrainVision has the STN lead on DBS1-8 and GPi on DBS9-16 (lab collection guide).
+- **Contact coordinates** (`channel_x`, `channel_y`, `channel_z` in mm, `channel_position`, and the stream's `coord_space`): where each lead contact was during that recording, from the lab's Brainlab reconstructions (`_cases/contacts.csv`). The space is Brainlab ACPC in the patient's own hemisphere (+x right, +y anterior, +z superior). Only the final lead position is imaged; inching blocks (`increment1_depth3`, ...) get that position slid along the lead to the depth they were recorded at. A lead that wasn't in the brain yet gets NaN. So far only 18 uh patients have reconstructions.
+- TDT microelectrode (MER) streams carry `analog_gain` = 4000: they come from the AlphaOmega analog output, so electrode volts = data / 4000. Which AO output fed which TDT input isn't documented, so check before comparing MER amplitudes to LFP.
+
 ## Using it from MATLAB
 
 MATLAB has to know which Python to use. Run this once per MATLAB session, with your own paths:

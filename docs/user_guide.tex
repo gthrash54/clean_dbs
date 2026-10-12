@@ -114,6 +114,18 @@ files = find_clean(idx, type="lfp", target="STN", implant="dual", max_saturated_
 Case info (dual or single, hemisphere, targets, depths, stim contacts) comes from \code{_cases/cases.csv} and \code{_cases/blocks.csv} in the cleaned folder, transcribed from the OR data sheets by AI, so any value can be a misreading. \code{scripts/crosscheck_cases.py} checks every row against the recordings and gives it a \code{status}: \textit{match} (the data agrees), \textit{conflict} (it doesn't, \code{check_detail} says why), \textit{sheet\_only} (nothing in the data to check it with) or \textit{no\_data}. Study IDs are matched ignoring capitals (UG3003 on Box, ug3003 in the tables). Filter on \code{status="match"} in \code{find_clean} for the safest set.
 
 % =============================================================================
+\section{Channel labels and contact locations}
+
+Every lead and ECoG channel in a cleaned file says what it is, right next to the data: \code{channel_names}, \code{channel_group} (ecog\_anterior, ecog\_posterior, lead1, lead2, emg, \ldots), \code{channel_target} (STN, GPi) and \code{channel_contact}.
+
+\begin{itemize}
+  \item \textbf{Contact numbering} is the lab's 1--8 for every lead: 1 = bottom ring, 2/3/4 = lower segments, 5/6/7 = upper segments (5 above 2, 6 above 3, 7 above 4), 8 = top ring. On a Medtronic SenSight lead that's levels 0, 1a--c, 2a--c, 3. Which way each segment faces isn't recorded.
+  \item \textbf{ECoG}: anterior strip = 1--6, posterior = 7--12 (OR sheets). \textbf{TDT leads}: lead 1 = channels 13--20, lead 2 = 21--28, worked out from impedance and stim in the data because the rig wiring isn't written down; \code{channel_source} says so. Lead 1 is the lead implanted and stimulated first. Stage 2 BrainVision has the STN lead on DBS1--8 and GPi on DBS9--16.
+  \item \textbf{Contact coordinates}: \code{channel_x}, \code{channel_y}, \code{channel_z} (mm), \code{channel_position} and the stream's \code{coord_space} say where each lead contact was during that recording, from the lab's Brainlab reconstructions (\code{_cases/contacts.csv}). Space: Brainlab ACPC in the patient's own hemisphere (+x right, +y anterior, +z superior). Only the final position is imaged; inching blocks get it slid along the lead to their depth. A lead not yet in the brain gets NaN. So far 18 uh patients have reconstructions.
+  \item \textbf{MER gain}: TDT microelectrode streams carry \code{analog_gain} = 4000 (AlphaOmega analog output), so electrode volts = data / 4000. The AO-to-TDT routing isn't documented, so check before comparing MER to LFP amplitudes.
+\end{itemize}
+
+% =============================================================================
 \section{Loading a cleaned file in MATLAB}
 
 No Python needed:
