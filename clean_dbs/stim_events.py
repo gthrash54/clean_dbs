@@ -8,8 +8,6 @@ VOICES = "ABCD"
 #the gizmo can also save any setting as its own epoc store, named by the user (AmpA or AmA/, CntA or CnA/, ...), so match the front of the name
 EPOC_PREFIX = {"Per":"period_ms", "Pe":"period_ms", "Cnt":"count", "Cn":"count", "Amp":"amplitude_ua", "Am":"amplitude_ua",
                "Dur":"duration_ms", "Du":"duration_ms", "Del":"delay_ms", "De":"delay_ms", "Chn":"channel", "Ch":"channel"}
-#brainvision stim markers come in pairs 60 us apart (R15 then R11, S15 then S13, S7 then S5); the first one is the pulse start
-BV_START = {"R15":"R11", "S15":"S13", "S7":"S5"}
 
 
 def stim_events(result, block):
@@ -19,26 +17,36 @@ def stim_events(result, block):
     result: the dictionary from read_tdt / read_bv
     block: the raw block folder or .vhdr it came from (only used to tell tdt from brainvision)
     Returns: dictionary of equal-length arrays, one entry per pulse (all empty if the block has no stim):
-      time (s on the recording's time axis), source (store / marker name, e.g. PeA_ or R15), voice (A-D for tdt, "" for brainvision),
+      time (s on the recording's time axis), source (store / marker name, e.g. PeA_, PerB or R15), voice (A-D for tdt, "" for brainvision),
       channel (stimulator channel, -1 = unknown), amplitude_ua (nan = unknown), period_ms (time to the next pulse in its train, nan = unknown),
       count (pulses in its train, -1 = unknown), confirmed (1 = tdt pulse store, 0 = brainvision marker whose meaning is inferred)
-    Brainvision: time is the pulse-start marker (R15/S15/S7); a second marker (R11/S13/S5) with no start marker right before it
-    is kept at its own time with its own name as source (it is 60 us after the pulse start when the pair is complete).
+    Brainvision: one row per rising edge of a code that markers.py calls stim for this cohort (see markers.label_bv), confirmed = 1 when a rule
+    or a stimulator file checked it. The falling marker of the same TTL (S13 after S15, ...) is never a second pulse; its delay is marker_lag_ms.
+    Codes held 40 ms or more (buzz, task cues) are never stim. Sidecar columns (amplitude_ua, pulse_width_us, protocol_*, ...) are added when
+    a stimulator file lines up with the markers.
+    A tdt store whose onsets and values don't line up is trimmed to the shorter one and noted in result["info"]["stim_warning"].
     Heads up: tdt pulses with amplitude 0 are kept (the gizmo logs them but no current goes out), filter on amplitude_ua if needed.
     """
     if Path(block).suffix.lower() == ".vhdr":
-        return _bv_events(result["epocs"])
-    return _tdt_events(result["epocs"], result.get("scalars", {}))
+        from clean_dbs.markers import label_bv
+        return label_bv(result, block)["stim"]
+    warnings = []
+    out = _tdt_events(result["epocs"], result.get("scalars", {}), warnings)
+    if warnings: #kept with the file (info stim_warning) so nobody has to trust a silent fix
+        result.setdefault("info", {})["stim_warning"] = "; ".join(warnings)
+    return out
 
 
-def _tdt_events(epocs, scalars):
+def _tdt_events(epocs, scalars, warnings):
     rows = []
     for voice in VOICES:
-        pulses = epocs.get(f"Pe{voice}_") #PeA/ = one event per pulse on voice A, data = its period in ms (checked against MonA on uh3003)
+        #PeA/ = one event per pulse on voice A, data = its period in ms (checked against MonA on uh3003); uh3001 calls voice B's PerB
+        source = next((name for name in (f"Pe{voice}_", f"Per{voice}") if name in epocs), None)
+        pulses = epocs.get(source)
         if pulses is None or len(pulses["onset"]) == 0:
             continue
-        t = np.asarray(pulses["onset"], dtype=np.float64)
-        info = {"period_ms":np.asarray(pulses["data"], dtype=np.float64)}
+        t, period = _same_length(source, pulses, warnings)
+        info = {"period_ms":period}
         #eS1p = all 24 settings once per train, a few us before its first pulse; period (row 0) lags one train behind, so it isn't used
         if "eS1p" in scalars and len(scalars["eS1p"]["ts"]) > 0:
             ts, data = scalars["eS1p"]["ts"], scalars["eS1p"]["data"]
@@ -51,32 +59,31 @@ def _tdt_events(epocs, scalars):
             key = EPOC_PREFIX.get(name.rstrip("_")[:-1])
             if name.rstrip("_")[-1:] != voice or key in (None, "period_ms") or len(e["onset"]) == 0:
                 continue
-            last = np.searchsorted(e["onset"], t + 1e-6, side="right") - 1
-            info[key] = np.where(last >= 0, np.asarray(e["data"], dtype=np.float64)[np.clip(last, 0, None)], np.nan)
-        rows.append(_table(t, f"Pe{voice}_", voice, info, confirmed=1))
+            onset, data = _same_length(name, e, warnings)
+            last = np.searchsorted(onset, t + 1e-6, side="right") - 1
+            info[key] = np.where(last >= 0, data[np.clip(last, 0, None)], np.nan) if len(data) else np.full(len(t), np.nan)
+        rows.append(_table(t, source, voice, info, confirmed=1))
     return _stack(rows)
 
 
-def _bv_events(epocs):
-    rows = []
-    for start, second in BV_START.items():
-        starts = np.asarray(epocs[start]["onset"], dtype=np.float64) if start in epocs else np.array([])
-        seconds = np.asarray(epocs[second]["onset"], dtype=np.float64) if second in epocs else np.array([])
-        if len(starts) > 0:
-            rows.append(_table(starts, start, "", {}, confirmed=0))
-        #keep second markers with no start marker in the 0.2 ms before them, some recordings (e.g. ug3003 erp001) mark pulses with S13 alone
-        if len(seconds) > 0:
-            before = np.searchsorted(starts, seconds, side="right") - 1
-            alone = (before < 0) | (seconds - starts[np.clip(before, 0, None)] > 2e-4) if len(starts) > 0 else np.ones(len(seconds), dtype=bool)
-            if alone.any():
-                rows.append(_table(seconds[alone], second, "", {}, confirmed=0))
-    return _stack(rows)
+def _same_length(name, e, warnings):
+    """
+    Input: epoc name, the epoc (onset, data), list to add a warning to
+    Returns: (onset, data) as float arrays of the same length. read_tdt already fixes the known case (uh3001/uh3006 CntA, one extra onset);
+    if a store still has more onsets than values (or fewer) the extra ones at the end are dropped and it's written down, never silently
+    """
+    onset, data = np.asarray(e["onset"], dtype=np.float64), np.asarray(e["data"], dtype=np.float64)
+    if len(onset) != len(data):
+        n = min(len(onset), len(data))
+        warnings.append(f"{name}: {len(onset)} onsets but {len(data)} values, used the first {n}")
+        onset, data = onset[:n], data[:n]
+    return onset, data
 
 
 def _table(t, source, voice, info, confirmed):
     n = len(t)
     nan = np.full(n, np.nan)
-    return {"time":t, "source":np.full(n, source, dtype="<U8"), "voice":np.full(n, voice, dtype="<U1"),
+    return {"time":t, "source":np.full(n, source, dtype="<U32"), "voice":np.full(n, voice, dtype="<U1"),
             "channel":np.nan_to_num(info.get("channel", nan), nan=-1).astype(np.int64),
             "amplitude_ua":info.get("amplitude_ua", nan), "period_ms":info.get("period_ms", nan),
             "count":np.nan_to_num(info.get("count", nan), nan=-1).astype(np.int64), "confirmed":np.full(n, confirmed, dtype=np.int8)}

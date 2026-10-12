@@ -2,7 +2,7 @@
 
 # Cleaning the whole inventory on Cheaha
 
-On my computer, `scripts/clean.py` cleans one block at a time. A full TDT block takes about 30 s, uses up to 1.8 GB of RAM and writes about 1.3 GB, so the whole inventory (about 550 recordings) is several hours and around a terabyte of disk. Cheaha is UAB's computing cluster. It runs the cleaning as a SLURM **job array**: many copies of the same script run at once, and each copy (a "task") cleans its own few rows of a fixed list of blocks.
+On my computer, `scripts/clean.py` cleans one block at a time. A full TDT block takes about 30 s and writes about 1.3 GB. Cleaning reads one window of the recording at a time, so it uses about 0.5 GB of RAM whatever the file size (an 8.4 GB, 69-channel brainvision file cleaned in 85 s at 0.56 GB, under a 4 GB cap), so the whole inventory (about 550 recordings) is several hours and around a terabyte of disk. Cheaha is UAB's computing cluster. It runs the cleaning as a SLURM **job array**: many copies of the same script run at once, and each copy (a "task") cleans its own few rows of a fixed list of blocks.
 
 Don't put real patient folder names or paths in this repo, in issues, or in messages. The manifest and reports have patient IDs in them, so keep them in the out folder and never commit them.
 
@@ -71,15 +71,33 @@ rclone config
 
 Make a new remote called `box`, pick **Box** as the type, leave the rest blank, and answer **n** to "Use auto config?". It then waits for a token. On **your own computer** (it needs a browser), install rclone and run `rclone authorize "box"`, sign in with Single Sign On using your UAB email and BlazerID, and paste the token it prints (between `--->` and `<---`) back into Cheaha. Check it with `rclone lsd box:`.
 
-Then copy the inventory. Do a dry run first, it shows what would copy without copying:
+Then copy **only the uh/UG study folders** (uh30xx and UG30xx, in any case). The Box inventory also holds other studies and some legacy folders named after patients; those must not be copied, so never copy the whole inventory folder. `Imaging` folders are left out too, because DICOM headers can carry patient names. rclone's include filters didn't pick folders reliably, so `scripts/copy_uhug.sh` lists the study folders first and copies them one by one:
 
 ```
-mkdir -p $USER_DATA/dbs_raw
-rclone copy --dry-run "box:<inventory folder on Box>" $USER_DATA/dbs_raw
-rclone copy --progress "box:<inventory folder on Box>" $USER_DATA/dbs_raw
+rclone lsf --dirs-only --max-depth 2 "box:UAB DBS Data/UAB DBS Raw Data" | grep -i -E '^[^/]+/(uh|ug)30[0-9]{2}/$' > $USER_DATA/dbs_raw/uhug_folders.txt
+while read d; do rclone copy --progress --exclude "**/[Ii]maging/**" "box:UAB DBS Data/UAB DBS Raw Data/$d" "$USER_DATA/dbs_raw/$d"; done < $USER_DATA/dbs_raw/uhug_folders.txt
 ```
 
-Use `copy`, never `sync`. `sync` deletes files on the destination to make it match, and you can't undo that. The copy is close to a terabyte, so it takes a while. If the login node stops it, ask Research Computing what they want us to use for big transfers (they also support Globus). If rclone later says the token expired, run `rclone config reconnect box:`.
+The list should have 31 lines (the script prints the count; don't print the list itself, it has the Box number folders in it). It's kept in `$USER_DATA/dbs_raw`, never in the repo. The copy is big and slow, so run it as a job; that way it keeps going after you log out:
+
+```
+cd $USER_DATA/clean_dbs
+mkdir -p logs
+sbatch --partition=short --time=12:00:00 --mem=2G --job-name=uhug_copy --output=logs/uhug_copy_%j.out --wrap "bash scripts/copy_uhug.sh"
+```
+
+Rerunning it is safe: `rclone copy` skips files that are already there, so a stopped copy just picks up where it left off. Use `copy`, never `sync`. `sync` deletes files on the destination to make it match, and you can't undo that. If rclone later says the token expired, run `rclone config reconnect box:`.
+
+### Check the copy
+
+A copy that stopped partway can leave a `.tev` cut short. tdt reads it without an error and fills the missing part with zeros, so check the whole copy before cleaning:
+
+```
+source .venv/bin/activate
+python scripts/check_copy.py $USER_DATA/dbs_raw
+```
+
+It lists every recording missing its signal file (`.tev` / `.eeg`) or with a `.tev` shorter than its `.tsq` index says, then a count. Rerun the copy job for anything it lists, then check again. Cleaning refuses a cut-short `.tev` too (it fails with the same message), so nothing zero-filled gets into the cleaned set.
 
 ## 4. Make the manifest
 
@@ -92,9 +110,22 @@ mkdir -p $USER_SCRATCH/clean_out
 python scripts/make_manifest.py $USER_DATA/dbs_raw $USER_SCRATCH/clean_out/manifest.csv --chunk 10
 ```
 
-It prints how many recordings it found, how many are missing signal files, and the `--array` range to use. `--chunk 10` means 10 blocks per task, so about 550 blocks becomes 55 tasks of roughly 5 minutes each. Add `--skip-missing` to leave out blocks that are missing their `.tev` / `.eeg` (it prints how many it skipped). Without it, those blocks just fail quickly and show up in the report as failed, so you can see what still needs copying.
+It prints how many recordings it found, how many are missing signal files, how much signal there is, the biggest peak memory estimate (`est_peak_gb`, also a column, next to `signal_gb`), and the `--array` range to use. It stops with an error if two recordings would write the same cleaned file (names that differ only in capitals count as the same, since Mac and Windows treat them that way); fix those folder names first. `--chunk 10` means 10 blocks per task, so about 550 blocks becomes 55 tasks of roughly 5 minutes each. Add `--skip-missing` to leave out blocks that are missing their `.tev` / `.eeg` (it prints how many it skipped). Without it, those blocks just fail quickly and show up in the report as failed, so you can see what still needs copying.
+
+### Put the case tables in the out folder
+
+Every cleaned file gets the targets and a `case_status` from `_cases/cases.csv`, so `clean.py` won't start without it. Copy `_cases` (with `cases.csv` and `blocks.csv`) into the out folder before submitting:
+
+```
+rclone copy "box:<cleaned folder on Box>/_cases" $USER_SCRATCH/clean_out/_cases
+ls $USER_SCRATCH/clean_out/_cases     # cases.csv  blocks.csv
+```
+
+For a cohort with no case tables, add `--no-cases` after the chunk size in the `sbatch` line (the targets then stay blank and `case_status` is `missing`).
 
 ## 5. Submit
+
+The code has to be committed: every cleaned file records the git commit that made it, so `clean.py --manifest` refuses to run if the commit is unknown or the code has uncommitted changes. `git status` in the `clean_dbs` folder should say nothing to commit (`--allow-dirty` overrides it, for test runs only).
 
 From the `clean_dbs` folder (the job looks for `.venv` in the folder you submit from):
 
@@ -109,9 +140,9 @@ Try just task 0 first like that. When it works, submit the rest with the range `
 sbatch --array=0-54 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv $USER_SCRATCH/clean_out 10
 ```
 
-The three things after the script are the manifest, the out folder, and the chunk size. The chunk **has to be the same number** you gave `make_manifest.py`, or the tasks won't line up with the `--array` range. To cap how many tasks run at the same time, add `%`, for example `--array=0-54%20`.
+The three things after the script are the manifest, the out folder, and the chunk size. Anything after the chunk size goes to `clean.py` (for example `--force`, see step 8). The chunk **has to be the same number** you gave `make_manifest.py`, or the tasks won't line up with the `--array` range. To cap how many tasks run at the same time, add `%`, for example `--array=0-54%20`.
 
-The defaults are set at the top of `scripts/clean_slurm.sh`: `express` partition (2 hour max), 1 hour per task, 4 GB of memory, 1 CPU. You can change any of them when you submit, for example `sbatch --mem=8G --time=02:00:00 ...`.
+The defaults are set at the top of `scripts/clean_slurm.sh`: `express` partition (2 hour max), 1 hour per task, 4 GB of memory, 1 CPU. 4 GB is enough for every recording: cleaning reads one window at a time, so a block peaks at about 0.5 GB whatever its size (`est_peak_gb` in the manifest). You can change any of them when you submit, for example `sbatch --time=02:00:00 ...`.
 
 ## 6. Watch it
 
@@ -123,7 +154,7 @@ tail logs/clean_dbs_<job id>_<task>.out                     # what one task prin
 
 `sbatch` prints the job id when you submit. In `sacct`, `COMPLETED` means every block in that task cleaned (or was already done), `FAILED` means at least one block in it failed (the reason is in the report and the `.out` log), `OUT_OF_MEMORY` means it needs more `--mem`, and `TIMEOUT` means it needs more `--time` or a smaller chunk.
 
-Each task writes its own report to `<out>/_reports/clean_report_<task>.csv` after every block, so tasks never write over each other, and a task that gets killed still reports the blocks it finished.
+Each task writes its own report to `<out>/_reports/clean_report_<task>_chunk<chunk>_<manifest hash>.csv` after every block, so tasks never write over each other, and a task that gets killed still reports the blocks it finished. The chunk size and a short hash of the manifest are in the name, so reports from another manifest never get mixed in. A task number past the end of the manifest prints a note and exits without error.
 
 ## 7. Merge the reports
 
@@ -133,17 +164,28 @@ When everything is done:
 python scripts/clean.py --merge-reports $USER_SCRATCH/clean_out --manifest $USER_SCRATCH/clean_out/manifest.csv
 ```
 
-That combines all the task reports into `<out>/clean_report.csv`, one row per manifest row, in manifest order, and prints how many cleaned, skipped, and failed. With `--manifest` it also adds a "not run" row for any block that has no report (usually a task that was killed before it finished its first block).
+`--manifest` is required. That combines the task reports made from this manifest into `<out>/clean_report.csv`, one row per manifest row, in manifest order, and prints how many of each status. When a row was run more than once (a rerun, or another chunk size), only the newest try is kept; rows that aren't in the manifest are left out with a warning. A block with no report at all (usually a task that was killed before it finished its first block) gets a "not run" row.
+
+| status | means |
+|---|---|
+| `cleaned` | cleaned for the first time |
+| `skipped` | already cleaned by this version of the code, left as is |
+| `recleaned` | there already, but cleaned again; `reason` says why (wouldn't open, older `clean_version`, or `--force`) |
+| `duplicate` | another copy of the same recording (same size) under a different number folder, cleaned once from the copy named in `reason` |
+| `conflict` | same name and place as another copy but a different size; the bigger one is cleaned, check these by hand |
+| `failed` | `reason` says why (paths in it start at the study ID) |
+| `not run` | no report for that row |
 
 ## 8. Rerun what failed
 
-Rerunning is safe. `clean_block` skips any block whose `.h5` is already there, and it only writes the `.h5` once the whole file is done (it writes `<block>.h5.part` and renames it at the end). So a killed task never leaves a half-finished `.h5` that looks done, and finished blocks are never redone.
+Rerunning is safe. `clean_block` skips a block whose `.h5` is already there **and** was made by the current version of the cleaning (`clean_version`, see the README); a `.h5` that won't open or comes from an older version is cleaned again and reported as `recleaned`. It only writes the `.h5` once the whole file is done (it writes `<block>.h5.part` and renames it at the end), so a killed task never leaves a half-finished `.h5` that looks done.
 
 - To rerun everything that didn't finish: submit the same `sbatch` command again. Finished blocks are skipped in seconds and show up as "skipped" in the new report.
 - To rerun only some tasks: give just those task numbers, for example `sbatch --array=3,17,40 ...`. Find them with `sacct` or in the "row" column of the report (task = row // chunk).
-- If tasks ran out of memory or time, add `--mem=8G` or `--time=02:00:00` to the `sbatch` line.
+- To clean everything again on purpose (say a fix that didn't bump `clean_version`), add `--force` after the chunk size: `sbatch --array=0-54 scripts/clean_slurm.sh <manifest> <out> 10 --force`.
+- If tasks ran out of time, add `--time=02:00:00` to the `sbatch` line.
 
-Then merge again (step 7). A rerun task replaces its own report file, so the merged report always shows the latest try. If you change the chunk size, delete `<out>/_reports` first so old reports don't mix with new ones.
+Then merge again (step 7). The merged report keeps the newest try of every row, so it's fine to rerun with a different chunk size.
 
 ## 9. Keep the results
 
@@ -172,4 +214,4 @@ UAB Research Computing docs, checked October 2026. Things marked "not checked" I
 - Storage paths, scratch 90 day purge, Cheaha accepting PHI (Long-Term Storage does not): https://docs.rc.uab.edu/data_management/storage/
 - rclone with Box: https://docs.rc.uab.edu/data_management/transfer/rclone/
 - `module load Anaconda3`: https://docs.rc.uab.edu/workflow_solutions/using_anaconda/
-- Not checked: that the uv installer works on Cheaha, the exact ssh hostname, whether big rclone copies are allowed on the login node, and the time per block on Cheaha's file system (30 s is on my computer). Run task 0 alone first and check its `Elapsed` and `MaxRSS` in `sacct` before submitting everything.
+- Not checked: that the uv installer works on Cheaha, the exact ssh hostname, and the time per block on Cheaha's file system (30 s is on my computer). The copy runs as a job, so it doesn't depend on the login node. Run task 0 alone first and check its `Elapsed` and `MaxRSS` in `sacct` before submitting everything.

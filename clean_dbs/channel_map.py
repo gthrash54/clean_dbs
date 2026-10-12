@@ -5,6 +5,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 import numpy as np
+from clean_dbs.bv_channels import channel_types
 
 #PZ5 impedance checks never report above 536.87 kOhm (2138 hits at exactly this value across 408 local blocks, 2026-10-11), so it means "open"
 PZ5_CEILING = 536.87
@@ -14,7 +15,7 @@ def channel_names(block, stream_name, n_channels):
     """
     Input:
     block: a tdt block folder or a brainvision .vhdr file
-    stream_name: the stream in result["streams"] (e.g. "dbs" for brainvision, "ecos" for tdt)
+    stream_name: the stream in result["streams"] (brainvision: "lead", "ecog", "emg", ... from read_bv, or "dbs" for the old single stream)
     n_channels: how many channels that stream has, used as a check
     Returns: list of names like "ecog_a1", "dbs1", "fdi_contra", or None if we can't say for sure
     Brainvision: the names the recorder wrote in the .vhdr (Ch1=ECOGA1,...), lowercased and with ecog written ecog_a1 / ecog_p1 everywhere.
@@ -26,13 +27,13 @@ def channel_names(block, stream_name, n_channels):
       into which PZ5 input. That wiring has to come from the OR sheets / headbox adapter, so we don't guess.
     """
     block = Path(block)
-    if block.suffix.lower() != ".vhdr" or stream_name != "dbs": #read_bv puts everything in one stream called dbs
+    if block.suffix.lower() != ".vhdr":
         return None
-    names = re.findall(r"^Ch\d+=([^,]*),", block.read_text(errors="ignore"), re.M)
-    if len(names) != n_channels:
+    rows = [r for r in channel_types(block) if stream_name == "dbs" or r["stream"] == stream_name]
+    if len(rows) != n_channels:
         return None
     #"ECOGA1", "ECOG_A1" and "ecog_a1" are all used for the same thing depending on the patient
-    names = [re.sub(r"^ecog_?([ap])(\d+)$", r"ecog_\1\2", n.strip().lower()) for n in names]
+    names = [re.sub(r"^ecog_?([ap])(\d+)$", r"ecog_\1\2", r["name"].strip().lower()) for r in rows]
     return names if len(set(names)) == len(names) else None
 
 
@@ -160,7 +161,7 @@ def _bv_impedance(vhdr):
             out["frequency"].append(np.nan)
             out["impedance"].append(float(value) if is_number else np.nan)
             out["connected"].append(int(is_number)) #"Out of Range!" and "Disconnected!" are the only words seen
-    return {"dbs":_as_arrays(out)} if out["channel"] else {}
+    return {"brainvision":_as_arrays(out)} if out["channel"] else {} #channel = position in the .vhdr, the same numbers as every stream's channels
 
 
 def _as_arrays(rows):
@@ -179,7 +180,7 @@ def _as_arrays(rows):
 TDT_WIRING_SOURCE = "inferred from data (impedance + stim, 2026-10-11), not yet confirmed by the lab"
 
 
-def channel_table(block, stream_name, device, n_channels, target1="", target2="", ecog=""):
+def channel_table(block, stream_name, device, n_channels, target1="", target2="", ecog="", implanted=(True, True)):
     """
     Per-channel labels for one stream, so the cleaned file says what each channel is right next to the data.
     Input:
@@ -188,21 +189,31 @@ def channel_table(block, stream_name, device, n_channels, target1="", target2=""
     n_channels: channels in the stream
     target1, target2: the case's lead 1 / lead 2 targets from _cases/cases.csv (e.g. "STN", "GPi"); blank if unknown
     ecog: the case's ECoG entry from cases.csv (e.g. "Ad-Tech 1x6; anterior 1-6; posterior 7-12", "none", "posterior strip only")
-    Returns: dictionary of lists, one entry per channel: name, group (ecog_strip1/ecog_strip2/lead1/lead2/emg/...), target, contact, source
-             or None if we don't know this stream's layout
+    implanted: (lead 1, lead 2) implanted or not, from cases.csv (see leads_implanted); a lead that never went in keeps its channels
+               but gets group lead<N>_not_implanted and no target, so nobody reads noise as a lead
+    Returns: dictionary of lists, one entry per channel: name, group (ecog_anterior/ecog_posterior/lead1/lead2/emg/...), target, contact, source
+             (brainvision also: subtype, side, muscle; see bv_channels.py) or None if we don't know this stream's layout
+    TDT blocks in a stage 2 folder (uh3005 "stage2 surgery (sedated, not GA)"): the strips only go in during stage 1, so channels 1-12 get
+    group ecog_*_not_placed and only the lead channels are labeled (same headbox wiring; the cross-check found the stimulated contacts
+    flat on exactly those channels in all 4 uh3005 stage 2 blocks).
     """
     #ecog strips: every OR sheet that records it says anterior = 1-6, posterior = 7-12, so that's the lab standard when a sheet is blank
     ecog_l = ecog.lower()
     said = "anterior 1-6" in ecog_l or "1-6 anterior" in ecog_l or "contacts 1-6 anterior" in ecog_l
     strip_source = "OR sheet" if said else "lab standard (anterior 1-6, posterior 7-12 on every sheet that records it)"
+    stage2 = re.search(r"stage\s*2", Path(block).parent.name, re.IGNORECASE) is not None
     def strips():
         out = []
         for side, name in (("a", "anterior"), ("p", "posterior")):
-            placed = not (ecog_l.startswith("none") or (f"{'posterior' if side == 'a' else 'anterior'} strip only" in ecog_l))
+            placed = not (stage2 or ecog_l.startswith("none") or (f"{'posterior' if side == 'a' else 'anterior'} strip only" in ecog_l))
             group = f"ecog_{name}" if placed else f"ecog_{name}_not_placed"
-            out += [(f"ecog_{side}{k}", group, "", str(k), strip_source) for k in range(1, 7)]
+            source = "stage 2 recording: ECoG strips are only placed in stage 1" if stage2 else strip_source
+            out += [(f"ecog_{side}{k}", group, "", str(k), source) for k in range(1, 7)]
         return out
     def lead(n, number, target):
+        if not implanted[number - 1]:
+            return [(f"lead{number}_c{c}", f"lead{number}_not_implanted", "", str(c), "cases.csv: this lead was never implanted, nothing is plugged in")
+                    for c in range(1, n + 1)]
         return [(f"lead{number}_c{c}", f"lead{number}", target, str(c), TDT_WIRING_SOURCE) for c in range(1, n + 1)]
     rows = None
     if device == "ecogdbs" and n_channels == 28:
@@ -214,12 +225,39 @@ def channel_table(block, stream_name, device, n_channels, target1="", target2=""
     elif device == "dbs1" and n_channels == 8:
         rows = lead(8, 1, target1)
     elif Path(block).suffix.lower() == ".vhdr":
-        names = channel_names(block, stream_name, n_channels)
-        if names is None:
-            return None
-        group = [("ecog_" + n.split("_")[1][0]) if n.startswith("ecog_") else ("dbs" if n.startswith("dbs") else "emg") for n in names]
-        rows = [(n, g, "", "", "brainvision header (.vhdr)") for n, g in zip(names, group)]
+        return _bv_table(block, stream_name, n_channels, target1, target2, implanted)
     if rows is None:
         return None
     return {"name":[r[0] for r in rows], "group":[r[1] for r in rows], "target":[r[2] for r in rows],
             "contact":[r[3] for r in rows], "source":[r[4] for r in rows]}
+
+
+def leads_implanted(case):
+    """
+    Input: case: one row of _cases/cases.csv as a dictionary (implant, target1, target2, notes), or None if the case has no row
+    Returns: (lead 1 implanted, lead 2 implanted). Unknown counts as implanted, so nothing is called missing without a reason.
+    single implant -> no lead 2. The notes can also say a lead never went in ("GPi lead never implanted" on uh3023, whose implant
+    still says dual); that target's lead is then marked. "dropped in" (uh3016) means it was implanted, just not tested, so it stays.
+    """
+    if case is None:
+        return (True, True)
+    implanted = [True, str(case.get("implant", "")).strip().lower() != "single"]
+    for m in re.finditer(r"(\w+) lead (was )?never implanted", str(case.get("notes", "")), re.IGNORECASE):
+        for k, target in enumerate((case.get("target1", ""), case.get("target2", ""))):
+            if target and m.group(1).lower() == str(target).strip().lower():
+                implanted[k] = False
+    return tuple(implanted)
+
+
+def _bv_table(block, stream_name, n_channels, target1, target2, implanted=(True, True)):
+    #brainvision: what bv_channels says about each channel of this stream (group, contact, muscle, ...), plus the case's lead 1 / lead 2 targets
+    rows = [r for r in channel_types(block) if stream_name == "dbs" or r["stream"] == stream_name]
+    names = channel_names(block, stream_name, n_channels)
+    if names is None:
+        return None
+    targets = {"lead1":target1, "lead2":target2}
+    gone = {f"lead{k + 1}" for k in range(2) if not implanted[k]} #a lead that never went in: its channels are noise
+    return {"name":names, "group":[r["group"] + "_not_implanted" if r["group"] in gone else r["group"] for r in rows],
+            "target":[targets.get(r["group"], "") if r["group"] not in gone else "" for r in rows],
+            "contact":[r["contact"] for r in rows], "source":[r["source"] for r in rows], "subtype":[r["subtype"] for r in rows],
+            "side":[r["side"] for r in rows], "muscle":[r["muscle"] for r in rows]}

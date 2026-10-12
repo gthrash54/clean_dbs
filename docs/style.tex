@@ -63,13 +63,14 @@
   listing options={style=code}}
 % \code{text}   inline code (no # or % inside)
 \newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\DisableLigatures[-]{family=tt*} % so --force prints as two hyphens, not a dash
 
 % \begin{tip}{Heading} ... \end{tip}     blue box for good-to-know
 % \begin{careful}{Heading} ... \end{careful}   amber box for things that bite
 \newtcolorbox{tip}[1]{colback=tipbg, colframe=tiprule, boxrule=0.5pt, arc=2pt, left=8pt, right=8pt,
   top=5pt, bottom=5pt, fonttitle=\bfseries, coltitle=black, colbacktitle=tipbg, title={#1},
   before skip=0.6em, after skip=0.8em}
-\newtcolorbox{careful}[1]{colback=warnbg, colframe=warnrule, boxrule=0.5pt, arc=2pt, left=8pt, right=8pt,
+\newtcolorbox{careful}[1]{breakable, colback=warnbg, colframe=warnrule, boxrule=0.5pt, arc=2pt, left=8pt, right=8pt,
   top=5pt, bottom=5pt, fonttitle=\bfseries, coltitle=black, colbacktitle=warnbg, title={#1},
   before skip=0.6em, after skip=0.8em}
 

@@ -65,3 +65,36 @@ def test_make_flags_dnu(tmp_path):
     flags = make_flags({"streams":{"ecos":stream}}, Path(tmp_path) / "block3_DNU")
     assert flags["dnu"] == 1 and "saturation_ecos" in flags and "new_segments" not in flags
     assert make_flags({"streams":{}}, Path(tmp_path) / "block3")["dnu"] == 0
+
+
+def test_saturation_flat_at_the_rail():
+    from clean_dbs.flags import Saturation
+    n, fs = 1000, 1000.0
+    data = np.zeros((4, n), dtype=np.float32)
+    data[0] = np.float32(0.53687084) #float tdt store pinned at the rail the whole block
+    data[1] = -np.float32(0.53687084) #the negative rail
+    data[2] = 0.0 #unused, flat at zero: not saturation
+    data[3] = 0.1 #flat but nowhere near the rail
+    stream = {"data":data, "fs":fs, "start_time":0.5, "channels":np.array([1, 2, 3, 4]), "rail":0.53687084}
+    expected = ([1, 2], [0.5, 0.5], [1.5, 1.5])
+    for sizes in ([n], [7, 300]): #whole and in windows
+        runs, a, k = Saturation(stream), 0, 0
+        while a < n:
+            b = min(n, a + sizes[k % len(sizes)])
+            runs.add(data[:, a:b])
+            a, k = b, k + 1
+        flags = runs.result()
+        np.testing.assert_array_equal(flags["channel"], expected[0])
+        np.testing.assert_allclose(flags["start"], expected[1])
+        np.testing.assert_allclose(flags["end"], expected[2])
+    assert find_saturation({**stream, "rail":np.nan})["channel"].size == 0 #rail unknown (brainvision): flat is never flagged
+    #integer-16 store in microvolts: rail is 32000 counts = 0.032 V
+    stream = {"data":np.full((1, n), 32000e-6, dtype=np.float32), "fs":fs, "start_time":0.0, "channels":[5], "rail":32000 * 1e-6}
+    np.testing.assert_array_equal(find_saturation(stream)["channel"], [5])
+
+
+def test_rail_from_store_settings():
+    from clean_dbs.read_tdt import _rail
+    assert _rail(np.float32, {}) == 0.53687084
+    assert _rail(np.int16, {"scale":"Micro"}) == 32000 * 1e-6
+    assert np.isnan(_rail(np.int16, {}))

@@ -4,7 +4,7 @@
 \begin{document}
 \doctitle{Cleaning the Whole Inventory on Cheaha}{Running clean\_dbs on UAB's computing cluster}
 
-On a laptop, \code{scripts/clean.py} cleans one recording at a time. A full TDT block takes about 30\,s, uses up to 1.8\,GB of memory and writes about 1.3\,GB, so the whole inventory (about 550 recordings) is several hours and around a terabyte of disk. On Cheaha the same script runs as a \textbf{job array}: many copies run at once, and each copy cleans its own slice of a fixed list of recordings.
+On a laptop, \code{scripts/clean.py} cleans one recording at a time. A full TDT block takes about 30\,s and writes about 1.3\,GB. Cleaning reads one window of the recording at a time, so it uses about 0.5\,GB of memory whatever the file size (an 8.4\,GB, 69-channel brainvision file cleans in 85\,s at 0.56\,GB, under a 4\,GB cap), so the whole inventory (about 550 recordings) is several hours and around a terabyte of disk. On Cheaha the same script runs as a \textbf{job array}: many copies run at once, and each copy cleans its own slice of a fixed list of recordings.
 
 \begin{tip}{What SLURM is}
 Cheaha is shared by the whole university, so you don't run programs on it directly. You hand \textbf{SLURM}, the scheduler, a short job script that says what to run and how much memory and time it needs (\code{sbatch}), and SLURM runs it when computers are free. A \textbf{job array} is that script submitted many times at once; each copy (a \textit{task}) gets its own number and cleans its own rows of the list.
@@ -62,15 +62,29 @@ rclone config
 \end{codebox}
 Make a new remote called \code{box}, pick \textbf{Box} as the type, leave the rest blank, and answer \textbf{n} to \textit{Use auto config?}. It then waits for a token. On your own computer (it needs a browser) run \code{rclone authorize "box"}, sign in with your UAB email, and paste the token it prints back into Cheaha. Check it with \code{rclone lsd box:}.
 
-Then copy the inventory, with a dry run first (it shows what would copy without copying):
+Then copy \textbf{only the uh/UG study folders} (uh30xx and UG30xx, in any case). The Box inventory also holds other studies and some legacy folders named after patients; those must not be copied, so never copy the whole inventory folder. \code{Imaging} folders are left out too, because DICOM headers can carry patient names. rclone's include filters didn't pick folders reliably, so \code{scripts/copy_uhug.sh} lists the study folders first and copies them one by one:
 \begin{codebox}
-mkdir -p $USER_DATA/dbs_raw
-rclone copy --dry-run "box:<inventory folder on Box>" $USER_DATA/dbs_raw
-rclone copy --progress "box:<inventory folder on Box>" $USER_DATA/dbs_raw
+rclone lsf --dirs-only --max-depth 2 "box:UAB DBS Data/UAB DBS Raw Data" | grep -i -E '^[^/]+/(uh|ug)30[0-9]{2}/$' > $USER_DATA/dbs_raw/uhug_folders.txt
+while read d; do rclone copy --progress --exclude "**/[Ii]maging/**" "box:UAB DBS Data/UAB DBS Raw Data/$d" "$USER_DATA/dbs_raw/$d"; done < $USER_DATA/dbs_raw/uhug_folders.txt
 \end{codebox}
+The list should have 31 lines (the script prints the count; don't print the list itself, it has the Box number folders in it). It's kept in \code{$USER_DATA/dbs_raw}, never in the repo. The copy is big and slow, so run it as a job; that way it keeps going after you log out:
+\begin{codebox}
+cd $USER_DATA/clean_dbs
+mkdir -p logs
+sbatch --partition=short --time=12:00:00 --mem=2G --job-name=uhug_copy --output=logs/uhug_copy_%j.out --wrap "bash scripts/copy_uhug.sh"
+\end{codebox}
+Rerunning it is safe: \code{rclone copy} skips files that are already there, so a stopped copy just picks up where it left off.
 \begin{careful}{Use copy, never sync}
 \code{rclone sync} deletes files on the destination to make it match, and that can't be undone. If rclone later says the token expired, run \code{rclone config reconnect box:}.
 \end{careful}
+
+\subsection{Check the copy}
+A copy that stopped partway can leave a \code{.tev} cut short. tdt reads it without an error and fills the missing part with zeros, so check the whole copy before cleaning:
+\begin{codebox}
+source .venv/bin/activate
+python scripts/check_copy.py $USER_DATA/dbs_raw
+\end{codebox}
+It lists every recording missing its signal file (\code{.tev}/\code{.eeg}) or with a \code{.tev} shorter than its \code{.tsq} index says, then a count. Rerun the copy job for anything it lists, then check again. Cleaning refuses a cut-short \code{.tev} too (it fails with the same message), so nothing zero-filled gets into the cleaned set.
 
 % =============================================================================
 \section{4. Make the manifest}
@@ -81,10 +95,21 @@ source .venv/bin/activate
 mkdir -p $USER_SCRATCH/clean_out
 python scripts/make_manifest.py $USER_DATA/dbs_raw $USER_SCRATCH/clean_out/manifest.csv --chunk 10
 \end{codebox}
-It prints how many recordings it found, how many are missing signal files, and the \code{--array} range to use. \code{--chunk 10} means 10 recordings per task, so about 550 recordings become 55 tasks of roughly 5 minutes each. Add \code{--skip-missing} to leave out recordings without their \code{.tev}/\code{.eeg}; otherwise they fail quickly and show up in the report, so you can see what still needs copying.
+It prints how many recordings it found, how many are missing signal files, how much signal there is, the biggest peak memory estimate (\code{est_peak_gb}, also a column, next to \code{signal_gb}), and the \code{--array} range to use. It stops with an error if two recordings would write the same cleaned file (names that differ only in capitals count as the same, since Mac and Windows treat them that way); fix those folder names first. \code{--chunk 10} means 10 recordings per task, so about 550 recordings become 55 tasks of roughly 5 minutes each. Add \code{--skip-missing} to leave out recordings without their \code{.tev}/\code{.eeg}; otherwise they fail quickly and show up in the report, so you can see what still needs copying.
+
+\subsection{Put the case tables in the out folder}
+Every cleaned file gets the targets and a \code{case_status} from \code{_cases/cases.csv}, so \code{clean.py} won't start without it. Copy \code{_cases} (with \code{cases.csv} and \code{blocks.csv}) into the out folder before submitting:
+\begin{codebox}
+rclone copy "box:<cleaned folder on Box>/_cases" $USER_SCRATCH/clean_out/_cases
+ls $USER_SCRATCH/clean_out/_cases     # cases.csv  blocks.csv
+\end{codebox}
+For a cohort with no case tables, add \code{--no-cases} after the chunk size in the \code{sbatch} line (the targets then stay blank and \code{case_status} is \code{missing}).
 
 % =============================================================================
 \section{5. Submit}
+\begin{careful}{Commit the code first}
+Every cleaned file records the git commit that made it, so \code{clean.py --manifest} refuses to run if the commit is unknown or the code has uncommitted changes. \code{git status} in the \code{clean_dbs} folder should say nothing to commit (\code{--allow-dirty} overrides it, for test runs only).
+\end{careful}
 From the \code{clean_dbs} folder (the job finds \code{.venv} in the folder you submit from), try just task 0 first:
 \begin{codebox}
 mkdir -p logs
@@ -94,11 +119,11 @@ When it works, submit the rest with the range \code{make_manifest.py} printed (t
 \begin{codebox}
 sbatch --array=0-54 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv $USER_SCRATCH/clean_out 10
 \end{codebox}
-The three things after the script are the manifest, the output folder, and the chunk size.
+The three things after the script are the manifest, the output folder, and the chunk size. Anything after the chunk size goes to \code{clean.py} (for example \code{--force}, see Section 8).
 \begin{careful}{The chunk has to match}
 Use the same chunk number you gave \code{make_manifest.py}, or the tasks won't line up with the array range. To cap how many tasks run at once, add \texttt{\%}, e.g.\ \texttt{-{}-array=0-54\%20}.
 \end{careful}
-Defaults (top of \code{scripts/clean_slurm.sh}): \code{express} partition (2 hour max), 1 hour per task, 4\,GB memory, 1 CPU. Change any of them when you submit, e.g.\ \code{sbatch --mem=8G --time=02:00:00 ...}.
+Defaults (top of \code{scripts/clean_slurm.sh}): \code{express} partition (2 hour max), 1 hour per task, 4\,GB memory, 1 CPU. 4\,GB is enough for every recording: cleaning reads one window at a time, so a block peaks at about 0.5\,GB whatever its size (\code{est_peak_gb} in the manifest). Change any of them when you submit, e.g.\ \code{sbatch --time=02:00:00 ...}.
 
 % =============================================================================
 \section{6. Watch it}
@@ -120,24 +145,39 @@ TIMEOUT & needs more \code{--time} or a smaller chunk \\
 \end{tabularx}
 
 \medskip
-Each task writes its own report to \code{<out>/_reports/clean_report_<task>.csv} after every recording, so tasks never overwrite each other and a killed task still reports what it finished.
+Each task writes its own report to \code{<out>/_reports/clean_report_<task>_chunk<chunk>_<manifest hash>.csv} after every recording, so tasks never overwrite each other and a killed task still reports what it finished. The chunk size and a short hash of the manifest are in the name, so reports from another manifest never get mixed in. A task number past the end of the manifest prints a note and exits without error.
 
 % =============================================================================
 \section{7. Merge the reports}
 \begin{codebox}
 python scripts/clean.py --merge-reports $USER_SCRATCH/clean_out --manifest $USER_SCRATCH/clean_out/manifest.csv
 \end{codebox}
-This combines every task report into \code{<out>/clean_report.csv} in manifest order and prints how many cleaned, skipped and failed. Recordings with no report at all (usually a task killed before its first recording) get listed as \textit{not run}.
+\code{--manifest} is required. This combines the task reports made from this manifest into \code{<out>/clean_report.csv} in manifest order and prints how many of each status. When a row was run more than once (a rerun, or another chunk size), only the newest try is kept; rows that aren't in the manifest are left out with a warning. Recordings with no report at all (usually a task killed before its first recording) get listed as \textit{not run}.
+
+\begin{tabularx}{\textwidth}{@{}l Y@{}}
+\toprule
+\textbf{status} & \textbf{It means} \\
+\midrule
+cleaned & cleaned for the first time \\
+skipped & already cleaned by this version of the code, left as is \\
+recleaned & there already, but cleaned again; \code{reason} says why (wouldn't open, older \code{clean_version}, or \code{--force}) \\
+duplicate & another copy of the same recording (same size) under a different number folder, cleaned once from the copy named in \code{reason} \\
+conflict & same name and place as another copy but a different size; the bigger one is cleaned, check these by hand \\
+failed & \code{reason} says why (paths in it start at the study ID) \\
+not run & no report for that row \\
+\bottomrule
+\end{tabularx}
 
 % =============================================================================
 \section{8. Rerun what failed}
-Rerunning is safe. A recording whose \code{.h5} already exists is skipped, and the \code{.h5} is only written once the whole file is done (it writes \code{<block>.h5.part} and renames it at the end), so a killed task never leaves a half-written file that looks finished.
+Rerunning is safe. A recording is skipped when its \code{.h5} is already there \textbf{and} was made by the current version of the cleaning (\code{clean_version}, see the README); a \code{.h5} that won't open or comes from an older version is cleaned again and reported as \textit{recleaned}. The \code{.h5} is only written once the whole file is done (it writes \code{<block>.h5.part} and renames it at the end), so a killed task never leaves a half-written file that looks finished.
 \begin{itemize}
   \item \textbf{Everything that didn't finish:} submit the same \code{sbatch} command again. Finished recordings are skipped in seconds.
   \item \textbf{Only some tasks:} give just those numbers, e.g.\ \code{--array=3,17,40}. The task is the report's \code{row} divided by the chunk.
-  \item \textbf{Out of memory or time:} add \code{--mem=8G} or \code{--time=02:00:00}.
+  \item \textbf{Everything again on purpose} (say a fix that didn't bump \code{clean_version}): add \code{--force} after the chunk size, e.g.\ \code{sbatch --array=0-54 scripts/clean_slurm.sh <manifest> <out> 10 --force}.
+  \item \textbf{Out of time:} add \code{--time=02:00:00}.
 \end{itemize}
-Then merge again. If you change the chunk size, delete \code{<out>/_reports} first so old and new reports don't mix.
+Then merge again. The merged report keeps the newest try of every row, so it's fine to rerun with a different chunk size.
 
 % =============================================================================
 \section{9. Keep the results}
@@ -155,6 +195,6 @@ python scripts/clean.py --manifest manifest.csv --task 0 --chunk 10 <out folder>
 The plain \code{python scripts/clean.py <raw folder> <out folder>} still cleans everything in one go.
 
 \vspace{1em}
-{\small\textit{Sources:} UAB Research Computing docs, checked October 2026: hardware and partitions, submitting jobs, storage, rclone, and Anaconda pages at \url{https://docs.rc.uab.edu}. Not yet checked on Cheaha itself: the uv installer, the exact ssh hostname, whether big rclone copies are allowed on the login node, and the time per recording there. Run task 0 alone first and check its \code{Elapsed} and \code{MaxRSS} in \code{sacct}.\par}
+{\small\textit{Sources:} UAB Research Computing docs, checked October 2026: hardware and partitions, submitting jobs, storage, rclone, and Anaconda pages at \url{https://docs.rc.uab.edu}. Not yet checked on Cheaha itself: the uv installer, the exact ssh hostname, and the time per recording there. The copy runs as a job, so it doesn't depend on the login node. Run task 0 alone first and check its \code{Elapsed} and \code{MaxRSS} in \code{sacct}.\par}
 
 \end{document}

@@ -56,19 +56,21 @@ A dictionary with the same layout for both rigs:
 
 \begin{tabularx}{\textwidth}{@{}l Y@{}}
 \toprule
-\code{r["streams"]} & one entry per signal (TDT: \code{ecos}, \code{emgg}, \code{mic_}, \ldots; BrainVision: \code{dbs}) \\
+\code{r["streams"]} & one entry per signal (TDT: \code{ecos}, \code{emgg}, \code{mic_}, \ldots; BrainVision: one per channel type, \code{lead}, \code{ecog}, \code{eeg}, \code{emg}, \code{audio}, \code{mer}, \ldots) \\
 \quad \code{data} & channels $\times$ samples, in \textbf{volts}, always 2-D (one channel is 1 $\times$ samples) \\
 \quad \code{fs} & exact sampling rate in Hz (e.g.\ 48828.125, not rounded) \\
 \quad \code{start_time} & time of the first sample, in seconds from the start of the recording \\
 \quad \code{channels} & channel numbers \\
-\quad \code{device}, \code{units} & which device recorded it (ecogdbs, emg, microphone, brainvision); units are always V \\
+\quad \code{device}, \code{units} & which device recorded it (ecogdbs, emg, microphone, brainvision); units are V (a BrainVision channel recorded in another unit, like BIP, gets its own stream that keeps that unit) \\
+\quad \code{rail} & the amplifier ceiling in volts (TDT 0.537\,V or 32000 counts, BrainVision actiCHamp 0.4096\,V), NaN when unknown \\
+\quad \code{channel_...} & BrainVision: what each channel is, from its name: \code{channel_names}, \code{channel_group} (lead1, ecog\_anterior, emg, \ldots), \code{channel_contact}, \code{channel_muscle}, \code{channel_side}, \code{channel_units}, \code{channel_source}; plus the stream's \code{type} and \code{subtype}. \code{read_bv(..., split=False)} gives the old single \code{dbs} stream instead \\
 \midrule
-\code{r["epocs"]} & one entry per event type (TDT: \code{Cam1}, \code{PeA_}; BrainVision: \code{R15}, \code{S13}) \\
+\code{r["epocs"]} & one entry per event type (TDT: \code{Cam1}, \code{PeA_}; BrainVision: \code{R15}, \code{S13}, \code{BtnPressed}) \\
 \quad \code{onset}, \code{offset} & when each event starts and ends, in seconds \\
 \quad \code{data} & the value tied to each event (e.g.\ frame number for \code{Cam1}) \\
 \midrule
 \code{r["scalars"]} & TDT only: a vector of values per event, e.g.\ \code{eS1p} = the stimulator's settings for every pulse \\
-\code{r["info"]} & block name, start date and time, duration; TDT also gives subject and rig template \\
+\code{r["info"]} & block name, start date and time (the rig's Birmingham clock time, whatever computer runs it; BrainVision takes the \code{.vmrk} clock as written; both look like \code{2025-01-31T09:15:02.123456}), duration in seconds from the longest stream; TDT also gives subject, rig template, \code{duration_header} (from the block header, NaN when it has no stop time) and \code{epoc_warning} when tdt gave a store more onsets than values; BrainVision also gives \code{cohort} \\
 \bottomrule
 \end{tabularx}
 
@@ -81,16 +83,25 @@ To get the time of every sample in a stream: \code{start_time + np.arange(n_samp
 \begin{codebox}
 python scripts/clean.py "<raw folder>" "<cleaned folder>"
 \end{codebox}
-The raw folder can be the whole inventory, one patient, or one surgery folder. Each recording becomes
-\code{<cleaned folder>/<patient>/<stage>/<block>.h5}, and each file holds:
+The raw folder can be the whole inventory, one patient, or one surgery folder. Each uh/UG recording becomes
+\code{<cleaned folder>/<patient>/<stage>/<block>.h5}; the other BrainVision cohorts (DLPFC, BI, PP, MC, ...) become
+\code{<cleaned folder>/<study ID>/<session>/<name>.h5}, where the session is the subfolder path below the study ID (lowercase, spaces as \code{_}).
+
+\textbf{The case tables have to be there first}: \code{<cleaned folder>/_cases/cases.csv} and \code{blocks.csv} (Section 3.1). Every file gets its lead targets and a \code{case_status} from them, so \code{clean.py} won't start without them. For a cohort with no case tables add \code{--no-cases}. Each file holds:
 \begin{itemize}
-  \item the signals in volts, tagged by type (\textit{lfp, mer, emg, audio, stim\_monitor}), with channel names where we know them
-  \item the events (Cam1 video frames, stim pulses, markers) and a standard \textbf{stim table}: one row per pulse with time, contact, amplitude and period
+  \item the signals in volts, tagged by type (\textit{lfp, eeg, mer, emg, audio, accel, joystick, stim\_monitor, unknown}), with channel names where we know them; BrainVision recordings come split into one stream per channel type (\code{lead}, \code{ecog}, \code{emg}, \ldots)
+  \item per-channel labels on TDT ecog/lead stores (\code{ecog_a1} \ldots\ \code{lead2_c8}, with the case's targets); a lead that was never implanted (single-lead cases, uh3023's GPi) keeps its channels as \code{lead2_not_implanted}, and TDT blocks from a stage 2 folder (uh3005) mark the strip channels \code{ecog_*_not_placed}
+  \item the events (Cam1 video frames, stim pulses, markers, each with a \code{type}: video, stim, stim\_params, task, marker, other) and a standard \textbf{stim table} (\code{/stim}): one row per pulse with time, contact, amplitude and period; the stimulator and task files found next to a BrainVision recording are kept under \code{/sidecars}
   \item \textbf{flags}: saturated stretches, real gaps in BrainVision recordings, impedance checks, and \textit{do not use}
-  \item where the raw data and the video live, and which version of this code made the file
+  \item where the raw data and the video live, and which version of this code made the file (\code{clean_version}, the git commit, package versions)
+  \item \code{case_status} in the info: the cross-check status of the patient's \code{cases.csv} row when it was cleaned (match, conflict, sheet\_only, unchecked, or missing when there's no row), so you know how far to trust the targets
 \end{itemize}
 
-Blocks that are already cleaned get skipped, so \textbf{adding a new patient is the same command}. \code{clean_report.csv} in the cleaned folder lists every block as cleaned, skipped or failed, with the reason. To check what's there before cleaning (for example, which recordings are missing their signal files), use \code{check_blocks("<raw folder>")}.
+Blocks that are already cleaned get skipped, so \textbf{adding a new patient is the same command}. A file is only skipped if it opens and was made by the current \code{CLEAN_VERSION} (\code{clean_dbs/version.py}); a file that won't open or comes from an older version is cleaned again, and \code{--force} cleans everything again. A recording copied under more than one number folder is cleaned once, and the other copies are listed in the report as \code{duplicate} or \code{conflict}.
+
+\begin{careful}{The CLEAN\_VERSION rule}
+Whenever a code change changes what goes into a cleaned file (a new or renamed field, different values, a different flag), add 1 to \code{CLEAN_VERSION} in \code{clean_dbs/version.py} in the same commit. Otherwise the next run skips every old file and the cleaned set ends up a mix of old and new. Changes that leave the \code{.h5} the same (speed, messages, docs) don't need a bump. Add a line to the version list in the README too: 1 = first numbered version; 2 = typed BrainVision streams, marker meanings, \code{/sidecars}, \code{rail} on every stream, BrainVision start time from the \code{.vmrk}, settings stores typed \textit{stim\_params}, \code{lead2_not_implanted} and stage 2 labels.
+\end{careful} Cohort layouts and the condition labels read from folder and file names (rest, AX-CPT, iTBS, awake/asleep, ...) are in \code{clean_dbs/cohorts.py}. \code{clean_report.csv} in the cleaned folder lists every block with its status and the reason: \textit{cleaned}, \textit{skipped} (already done by this version), \textit{recleaned} (there but broken, older, or \code{--force}), \textit{duplicate}, \textit{conflict}, \textit{failed} (paths in the reason start at the study ID), or \textit{not run} (Cheaha only). It's saved after every block, and \code{clean.py} exits with an error code if any block failed. To check what's there before cleaning, use \code{check_blocks("<raw folder>")}, or \code{python scripts/check_copy.py "<raw folder>"}, which also finds TDT \code{.tev} files cut short by a stopped copy (cleaning refuses those instead of reading zeros).
 
 For the whole inventory at once, run it on Cheaha; see the \textit{Cheaha Guide} PDF.
 
@@ -100,7 +111,7 @@ from clean_dbs import build_index, find_clean, qc_report
 idx = build_index("<cleaned folder>")      # one row per block, reads no signal so it's fast
 files = find_clean(idx, type="lfp", target="STN", implant="dual", max_saturated_s=0)
 \end{codebox}
-Case info (dual or single, hemisphere, targets, depths, stim contacts) comes from \code{_cases/cases.csv} and \code{_cases/blocks.csv} in the cleaned folder, transcribed from the OR data sheets. \textbf{Only rows someone has checked against the sheet} (the \code{verified} column filled in) get used.
+Case info (dual or single, hemisphere, targets, depths, stim contacts) comes from \code{_cases/cases.csv} and \code{_cases/blocks.csv} in the cleaned folder, transcribed from the OR data sheets by AI, so any value can be a misreading. \code{scripts/crosscheck_cases.py} checks every row against the recordings and gives it a \code{status}: \textit{match} (the data agrees), \textit{conflict} (it doesn't, \code{check_detail} says why), \textit{sheet\_only} (nothing in the data to check it with) or \textit{no\_data}. Study IDs are matched ignoring capitals (UG3003 on Box, ug3003 in the tables). Filter on \code{status="match"} in \code{find_clean} for the safest set.
 
 % =============================================================================
 \section{Loading a cleaned file in MATLAB}
@@ -111,7 +122,7 @@ addpath("<path to clean_dbs>/matlab")
 r = clean_dbs_load("<cleaned folder>/uh3021/stage1/clinical_dbs1.h5", "types", {"lfp"}, "t1", 10, "t2", 20);
 x = r.streams.ecos.data;     % channels x samples, single, volts
 \end{codebox}
-Only the window you ask for is read from disk, so this is fast even on 1\,GB files. Flags (like \code{r.flags.saturation_ecos}) always cover the whole recording.
+Only the window you ask for is read from disk, so this is fast even on 1\,GB files. Flags (like \code{r.flags.saturation_ecos}) always cover the whole recording. \code{r.stim} is the stim table (one entry per pulse inside the window, text columns as cell arrays), \code{r.info} has every info attribute (including \code{duration_header} and \code{case_status}) and \code{r.provenance} has \code{clean_version}.
 
 % =============================================================================
 \section{Reading raw files from MATLAB through Python}
@@ -130,12 +141,12 @@ MATLAB only converts one level at a time, so you need a \code{struct()} at each 
 % =============================================================================
 \section{What's in the cleaned folder}
 
-\begin{tabularx}{\textwidth}{@{}l Y@{}}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.36\textwidth} Y@{}}
 \toprule
-\code{<patient>/<stage>/<block>.h5} & one cleaned recording (signals, events, stim table, flags, notes, provenance) \\
+\code{<patient>/<stage>/<block>.h5} (uh/UG), \code{<study ID>/<session>/<name>.h5} (other cohorts) & one cleaned recording (signals, events, stim table, flags, notes, provenance) \\
 \code{_cases/cases.csv} & one row per patient from the OR sheets: dual or single, hemisphere, targets, ECoG, EMG \\
 \code{_cases/blocks.csv} & one row per recording from the OR sheets: target, leads in place, stim contacts, depth, notes \\
-\code{clean_report.csv} & every recording from the last run: cleaned, skipped or failed, and why \\
+\code{clean_report.csv} & every recording from the last run: cleaned, skipped, recleaned, duplicate, conflict, failed or not run, and why \\
 \code{_about/} & this guide \\
 \bottomrule
 \end{tabularx}
@@ -149,10 +160,13 @@ MATLAB only converts one level at a time, so you need a \code{struct()} at each 
   \item \textbf{Incomplete copies.} Many local copies only have the small index files and are missing the signal (\code{.tev} for TDT, \code{.eeg} for BrainVision). Box has the full recordings. It tells you which file is missing.
   \item \textbf{Everything is in volts.} BrainVision stores microvolts, and older TDT blocks (uh3002, uh3003) store whole numbers in µV or mV. The readers convert all of it. Multiply by $10^6$ for µV on a plot.
   \item \textbf{Old microelectrode channels.} On uh3002 the spike and micro/macro LFP stores were saved as whole millivolts, so they only take a few flat values. We don't use them.
-  \item \textbf{Marker names depend on the rig.} On uh3 stage 2, R15 is the start of each stim pulse and R11 comes 60\,µs later. Other patients use S13/S15 and so on.
+  \item \textbf{Marker codes mean different things per cohort.} For BrainVision, \code{markers.py} reads each S/R code as a TTL line going up and down: a line up for a pulse width (60--240\,µs) is a stim pulse, up 0.1--40\,ms with many widths is a TTL-coded stim trial, and a line held 100\,ms (the Buzzy vibration) or a fixed-width trigger is never called stim. Each marker in the file has \code{type}, \code{meaning} and \code{evidence}; anything unchecked says \code{unknown}.
+  \item \textbf{Generic BrainVision channel names stay unknown.} Ch12, 17, Leg, SCS3 and the like go in the \code{unknown} stream until the lab gives the montage (\code{COHORT_OVERRIDES} in \code{bv_channels.py}).
+  \item \textbf{Stimulator files.} MC\_Stimulus programs, TTL tables, stim\_struct.mat and stimuli\_ordered.csv next to a BrainVision recording are lined up with the stim markers by timing; when they match, amplitude, pulse width and condition go into \code{/stim}. Every file found is kept under \code{/sidecars/<name>}, matched or not.
   \item \textbf{BrainVision gaps.} BrainVision writes a NewSegment marker at restarts. Most are not real gaps, but a few per recording are (up to about 0.6\,s). They're in \code{/flags/new_segments} (\code{is_gap} = 1 for real ones); don't filter straight across them.
-  \item \textbf{Saturation.} Some channels hit the amplifier ceiling (about 0.537\,V) for seconds, often when a lead is plugged into another device. It's flagged in \code{/flags/saturation_<stream>}; the data isn't changed.
-  \item \textbf{TDT channel names.} We know ecos channels 1--12 are the ECoG strips, but which inputs are lead 1 vs lead 2 isn't written down anywhere yet, so TDT channels have numbers, not names.
+  \item \textbf{Saturation.} Some channels hit the amplifier ceiling (about 0.537\,V, or 32000 counts on whole-number stores) for seconds, often when a lead is plugged into another device, and some sit there the whole block (uh3002 dbs1\_clinicaltesting). It's flagged in \code{/flags/saturation_<stream>}; the data isn't changed. A channel flat the whole block is only flagged if it sits at or past the stream's \code{rail}; flat anywhere else (like 0, unused) isn't. BrainVision's rail is known for the actiCHamp (0.4096\,V per electrode; a referenced channel can reach about twice that) and for INT\_16 files; other amplifiers have rail NaN, so only stretches inside the block are flagged there.
+  \item \textbf{Cut-short copies.} A \code{.tev} cut short by a stopped copy fails with ``cut short'' instead of being read. Copy that block again from Box.
+  \item \textbf{TDT channel names are inferred.} On the 28-channel ecos store, 1--6 / 7--12 are the anterior / posterior strips (every OR sheet that says so), 13--20 lead 1 and 21--28 lead 2. The lead wiring was worked out from the data (impedance, and which channel goes flat while its contact is stimulated) on 15 cases; the lab still has to confirm it, so \code{channel_source} says so.
 \end{itemize}
 \end{careful}
 
@@ -170,9 +184,14 @@ MATLAB only converts one level at a time, so you need a \code{struct()} at each 
 \code{clean_dbs/channel_map.py} & channel names and impedance checks \\
 \code{clean_dbs/stim_events.py} & the standard stim table, BrainVision clock fix \\
 \code{clean_dbs/datatypes.py} & which streams are lfp, mer, emg, \ldots \\
+\code{clean_dbs/bv_channels.py} & what each BrainVision channel is, from its name \\
+\code{clean_dbs/markers.py} & what each BrainVision marker code means, and which are stim \\
+\code{clean_dbs/sidecars.py} & stimulator and task files next to a BrainVision recording \\
 \code{clean_dbs/index.py} & table of the cleaned set, \code{find_clean}, quick QC \\
+\code{clean_dbs/version.py} & \code{CLEAN_VERSION}, bump it when the cleaned output changes \\
 \code{scripts/clean.py} & cleans a folder (or one Cheaha task) \\
 \code{scripts/make_manifest.py}, \code{clean_slurm.sh} & the Cheaha job \\
+\code{scripts/copy_uhug.sh}, \code{check_copy.py} & copy only the uh/UG study folders from Box, then check the copy \\
 \code{matlab/clean_dbs_load.m} & loads a cleaned file into a MATLAB struct \\
 \code{tests/} & small tests, no recordings needed (\code{python -m pytest tests}) \\
 \code{docs/} & these PDFs \\

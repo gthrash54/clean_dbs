@@ -62,3 +62,48 @@ def test_to_volts_float_is_unchanged():
 def test_to_volts_integer_without_scale_fails():
     with pytest.raises(ValueError, match="StoresListing"):
         _to_volts(np.array([[1]], dtype=np.int16), {}, "ecog", Path("block1"))
+
+
+def small_block(tmp_path, start=1.7e9):
+    from test_windows import write_tdt
+    rng = np.random.default_rng(4)
+    ecos = rng.standard_normal((2, 1024 * 20)).astype(np.float32)
+    return write_tdt(tmp_path / "uh9999" / "stage1 surgery" / "block1", {"ecos":(48828.125, ecos, 1024)}, start=start)
+
+
+def test_truncated_tev_raises(tmp_path):
+    from clean_dbs.read_tdt import read_tdt, tdt_windows, tev_problem
+    block = small_block(tmp_path)
+    assert tev_problem(block) == ""
+    tev = block / "b.tev"
+    tev.write_bytes(tev.read_bytes()[:-4]) #one sample short, tdt would quietly fill it with zeros
+    assert "cut short" in tev_problem(block)
+    for read in (read_tdt, tdt_windows):
+        with pytest.raises(ValueError, match="cut short"):
+            read(block)
+
+
+def test_start_time_is_chicago_whatever_the_machine(tmp_path, monkeypatch):
+    import time
+    from clean_dbs.read_tdt import read_tdt
+    block = small_block(tmp_path) #1.7e9 s = 2023-11-14 22:13:20 UTC = 16:13:20 in Chicago (CST)
+    for tz in ("UTC", "America/Chicago", "Asia/Tokyo"):
+        monkeypatch.setenv("TZ", tz)
+        time.tzset()
+        assert read_tdt(block)["info"]["start"] == "2023-11-14T16:13:20"
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_duration_from_streams_when_no_stop(tmp_path):
+    from clean_dbs.read_tdt import read_tdt, tdt_windows
+    block = small_block(tmp_path)
+    info = read_tdt(block)["info"]
+    assert info["duration"] == pytest.approx(1024 * 20 / 48828.125) #longest stream, not the header
+    assert info["duration_header"] == pytest.approx(1024 * 19 / 48828.125 + 1) #write_tdt puts the stop 1 s after the last packet
+    tsq = block / "b.tsq"
+    tsq.write_bytes(tsq.read_bytes()[:-40]) #drop the stop marker, like a block that didn't end cleanly
+    with pytest.warns(Warning):
+        info = read_tdt(block)["info"]
+    assert info["duration"] == pytest.approx(1024 * 20 / 48828.125) and np.isnan(info["duration_header"])
+    assert tdt_windows(block)[0]["info"]["duration"] == pytest.approx(1024 * 20 / 48828.125)

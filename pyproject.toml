@@ -8,7 +8,7 @@ name = "clean_dbs"
 version = "0.1.0"
 description = "Walker lab toolbox for loading and cleaning intraoperative DBS recordings"
 requires-python = ">=3.10"
-dependencies = ["tdt", "numpy", "mne", "h5py", "pandas"]
+dependencies = ["tdt", "numpy", "mne", "h5py", "pandas", "tzdata"] #tzdata: Windows has no time zone database of its own (read_tdt uses America/Chicago)
 
 [project.optional-dependencies]
 dev = ["pytest"] #only needed to run the tests

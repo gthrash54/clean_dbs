@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from clean_dbs.cohorts import COHORTS, ID_IN_NAME_RE, NUMBER_RE, cohort_of, condition_of
 
 
 def describe_block(block):
@@ -7,15 +8,90 @@ def describe_block(block):
     Input:
     block: a tdt block folder or a brainvision .vhdr file (one item from find_all_blocks)
     Returns: dictionary with patient, stage, block (name), format ("tdt" or "bv")
+        uh/UG (and any recording in a stage folder with no study ID above it) give just those four, exactly as before
+        every other cohort also gives cohort, session (subfolder path below the ID, lowercase, spaces as _, "" at the ID root),
+        parent_id (the outer ID when this ID's folder sits inside another one, else ""), condition and state (see cohorts.condition_of);
+        stage is "stageN" there only if a stage folder is in the session, else ""
+    Raises ValueError when no patient can be worked out (no stage folder for uh/UG, or no study ID above it or in its name)
     """
     block = Path(block)
     is_bv = block.suffix.lower() == ".vhdr"
+    name, fmt = block.stem if is_bv else block.name, "bv" if is_bv else "tdt"
+    folders = block.parent.parts
+    ids = [i for i, part in enumerate(folders) if cohort_of(part)]
+    #in a number folder with no ID folder (straight in it, or in a cohort folder with no number like MOTIF/): only the file name can say whose it is
+    if not ids and any(NUMBER_RE.match(f) for f in folders) and not re.search(r"stage\s*\d", block.parent.name, re.IGNORECASE):
+        return _from_name(block, name, fmt)
+    #uh/UG keep the original stage layout and output path, so cleaned sets made before cohorts existed still line up
+    if not ids or COHORTS[cohort_of(folders[ids[-1]])]["layout"] == "stage":
+        return _stage_layout(block, name, fmt)
+    #innermost ID wins, so LFP03/CHR003/x.vhdr belongs to CHR003, with LFP03 kept as parent_id
+    below = folders[ids[-1] + 1:]
+    stage = next((f"stage{m.group(1)}" for f in below if (m := re.search(r"stage\s*(\d)", f, re.IGNORECASE))), "")
+    cohort = cohort_of(folders[ids[-1]])
+    condition, state = condition_of("/".join(below + (name,)), cohort)
+    return {"patient":canonical_id(folders[ids[-1]]), "stage":stage, "block":name, "format":fmt, "cohort":cohort,
+            "session":"/".join(f.strip().lower().replace(" ", "_") for f in below),
+            "parent_id":canonical_id(folders[ids[-2]]) if len(ids) > 1 else "", "condition":condition, "state":state}
+
+
+def canonical_id(name):
+    """
+    Input:
+    name: a study ID as written on a folder or file ("dlpfc045", "SEP_03", "Burst012")
+    Returns: one spelling per person, prefix in capitals and no separator ("DLPFC045", "SEP03", "BURST012"); uh/UG IDs never go through this
+    """
+    match = ID_IN_NAME_RE.search(str(name))
+    return match.group(1).upper() + match.group(2) if match else str(name)
+
+
+def _stage_layout(block, name, fmt):
     #folder names vary ("stage1 surgery", "stage 2 surgery", "stage2 surgery (sedated, not GA)"), so pull out just "stage" + the number
     match = re.search(r"stage\s*(\d)", block.parent.name, re.IGNORECASE)
     if match is None:
         raise ValueError(f"Can't tell the stage from {block.parent.name!r}, expected a folder like 'stage1 surgery' above {block.name}")
-    return {"patient":block.parent.parent.name, "stage":"stage" + match.group(1),
-            "block":block.stem if is_bv else block.name, "format":"bv" if is_bv else "tdt"}
+    return {"patient":block.parent.parent.name, "stage":"stage" + match.group(1), "block":name, "format":fmt}
+
+
+def _from_name(block, name, fmt):
+    #a few recordings sit straight in a number folder; the ID is only usable if the file name carries one
+    match = ID_IN_NAME_RE.search(name)
+    if match is None:
+        raise ValueError(f"No study ID folder above {block.name} and none in its name, can't tell whose recording it is")
+    cohort = match.group(1).lower()
+    condition, state = condition_of(name, cohort)
+    return {"patient":canonical_id(match.group(0)), "stage":"", "block":name, "format":fmt, "cohort":cohort, "session":"",
+            "parent_id":"", "condition":condition, "state":state}
+
+
+def recording_condition(block):
+    """
+    Input:
+    block: a tdt block folder or a brainvision .vhdr file, from any cohort including uh/UG
+    Returns: (condition, state) read from the folder and file names, see cohorts.condition_of; ("", "") if they don't say
+    """
+    try:
+        info = describe_block(block)
+    except ValueError:
+        return condition_of(Path(block).stem)
+    if "condition" in info:
+        return info["condition"], info["state"]
+    #uh/UG: the stage folder isn't a condition, so only the block name counts
+    return condition_of(info["block"], cohort_of(info["patient"]) or "")
+
+
+def source_path(block):
+    """
+    Input:
+    block: a tdt block folder or a brainvision .vhdr file
+    Returns: the raw path from the outermost study ID down (e.g. "uh3021/stage1 surgery/clinical_dbs1", "PP012/LFP034/lfp1.vhdr"),
+        never the full path on someone's computer; uh/UG (and anything without a study ID folder) keep the last 3 parts as before
+    """
+    parts = Path(block).parts
+    ids = [i for i, part in enumerate(parts[:-1]) if cohort_of(part)]
+    if not ids or COHORTS[cohort_of(parts[ids[-1]])]["layout"] == "stage":
+        return "/".join(parts[-3:])
+    return "/".join(parts[ids[0]:])
 
 
 def missing_files(block):
@@ -38,7 +114,51 @@ def output_path(block, out_root):
     Input:
     block: a tdt block folder or a brainvision .vhdr file
     out_root: top of the cleaned set
-    Returns: where that block's cleaned file goes, out_root/<patient>/<stage>/<block>.h5
+    Returns: where that block's cleaned file goes
+        uh/UG: out_root/<patient>/<stage>/<block>.h5 (unchanged)
+        other cohorts: out_root/<patient>/<session>/<block>.h5, the session keeps LFP1.vhdr in two subfolders apart
     """
     info = describe_block(block)
-    return Path(out_root) / info["patient"] / info["stage"] / (info["block"] + ".h5")
+    if "session" not in info:
+        return Path(out_root) / info["patient"] / info["stage"] / (info["block"] + ".h5")
+    return Path(out_root) / info["patient"] / Path(*info["session"].split("/")) / (info["block"] + ".h5")
+
+
+def recording_size(block):
+    """
+    Input:
+    block: a tdt block folder or a brainvision .vhdr file
+    Returns: bytes of the signal (the .eeg named in the .vhdr, or the .tev/.sev/.tsq files), or of the .vhdr when its signal isn't there
+    """
+    block = Path(block)
+    if block.is_dir():
+        return sum(f.stat().st_size for f in block.iterdir() if f.suffix.lower() in (".tev", ".sev", ".tsq"))
+    names = [line.split("=", 1)[1].strip() for line in block.read_text(errors="ignore").splitlines() if line.startswith("DataFile=")]
+    data = block.parent / (names[0] if names else block.stem + ".eeg")
+    return data.stat().st_size if data.is_file() else block.stat().st_size
+
+
+def find_duplicates(blocks, size=recording_size):
+    """
+    The same recording is often copied under several number folders on Box, so two recordings can land on the same output path.
+    Input:
+    blocks: list of recordings (from find_all_blocks)
+    size: function giving a recording's size, to tell a true copy from a different recording with the same name and place
+    Returns: dictionary {skipped recording: (the one that's kept, reason)}. reason is "duplicate" (same size) or "conflict" (sizes differ;
+        the biggest is kept since a smaller one is usually an incomplete copy, check these by hand). Equal sizes keep the first by path,
+        so the choice is the same every run. Recordings that can't be described (no ID) are left out, they fail later with the reason.
+    """
+    groups = {}
+    for block in sorted(blocks):
+        try:
+            where = str(output_path(block, "")).lower() #lowercase so it's a clash on Mac/Windows too
+        except ValueError:
+            continue
+        groups.setdefault(where, []).append((block, size(block)))
+    skipped = {}
+    for copies in groups.values():
+        kept, kept_size = max(copies, key=lambda c: c[1]) #max returns the first of equal sizes, and copies are sorted by path
+        for block, n in copies:
+            if block != kept:
+                skipped[block] = (kept, "duplicate" if n == kept_size else "conflict")
+    return skipped

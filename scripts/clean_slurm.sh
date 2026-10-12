@@ -4,6 +4,7 @@
 # submit from the clean_dbs folder (the one with pyproject.toml), like:
 #   mkdir -p logs
 #   sbatch --array=0-54 scripts/clean_slurm.sh <manifest.csv> <out folder> 10
+# anything after the chunk size goes to clean.py, e.g. --force to clean everything again
 # make_manifest.py prints the right --array range for your chunk size
 # the #SBATCH lines below are defaults, anything given to sbatch on the command line wins
 
@@ -12,7 +13,7 @@
 #SBATCH --partition=express
 # max time per task (hours:minutes:seconds), slurm kills the task after this; raise it if you use a bigger chunk
 #SBATCH --time=01:00:00
-# one block peaks at ~1.8 GB of RAM, 4G leaves room; blocks run one at a time so this doesnt grow with chunk
+# cleaning reads one window at a time, so a block peaks at ~0.5 GB of RAM whatever its size (13.5 GB brainvision included); 4G leaves room, and blocks run one at a time so this doesnt grow with chunk
 #SBATCH --mem=4G
 # one task = one program on one cpu, the cleaning code doesnt use more than one cpu
 #SBATCH --nodes=1
@@ -29,6 +30,7 @@ set -euo pipefail
 MANIFEST="$1"
 OUT="$2"
 CHUNK="${3:-1}" # rows per task, 1 if left out
+EXTRA=("${@:4}") # anything after the chunk goes to clean.py as is, e.g. --force or --no-cases
 
 # slurm starts the job in the folder sbatch was run from, which should be the clean_dbs folder
 cd "$SLURM_SUBMIT_DIR"
@@ -36,10 +38,19 @@ cd "$SLURM_SUBMIT_DIR"
 # switch on the toolbox's python (the .venv made with uv during setup)
 source .venv/bin/activate
 
+# read_tdt already gives Chicago time whatever the machine's zone, this is just so dates in the log match the rig's clock
+export TZ=America/Chicago
+
+# the case tables go into every file (targets, case_status); stop here instead of in every task's python (clean.py checks too)
+if [ ! -f "$OUT/_cases/cases.csv" ] && [[ " ${EXTRA[*]} " != *" --no-cases "* ]]; then
+    echo "no $OUT/_cases/cases.csv, copy _cases (cases.csv, blocks.csv) into the out folder first" >&2
+    exit 1
+fi
+
 # show which node and task this is at the top of the log, handy when something goes wrong
 echo "task $SLURM_ARRAY_TASK_ID of job $SLURM_ARRAY_JOB_ID on $(hostname), started $(date)"
 
 # clean.py reads SLURM_ARRAY_TASK_ID itself to pick its rows of the manifest
-python scripts/clean.py --manifest "$MANIFEST" --chunk "$CHUNK" "$OUT"
+python scripts/clean.py --manifest "$MANIFEST" --chunk "$CHUNK" "${EXTRA[@]}" "$OUT"
 
 echo "finished $(date)"

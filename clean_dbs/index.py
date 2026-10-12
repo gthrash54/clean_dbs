@@ -49,11 +49,11 @@ def build_index(cleaned_root):
       streams: stream names; subtypes: type:subtype pairs, e.g. "lfp:ecog+lead;mer:spike"
       n_<type>: channel count per type (lfp, mer, emg, audio, stim_monitor, unknown), 0 if absent
       fs_<type>: sampling rate per type; text like "12207.03125;48828.125" if streams of one type differ
-      events: event types present (video, stim, stim_params, marker, other); n_video_frames, n_stim_events
+      events: event types present (video, stim, stim_params, task, marker, other); n_video_frames, n_stim_events (rows of /stim = pulses)
       video: where the .avi is (from the study ID down), blank if none
       saturated_s: seconds where any channel sits at the amplifier ceiling (stim_monitor not counted); saturated_s_<type> per type
       n_gaps, gap_s: real BrainVision recording gaps and the seconds missing (NaN for tdt, no gap check there)
-      dnu, clean_dbs_commit, uncommitted_changes, created
+      dnu, clean_version, clean_dbs_commit, uncommitted_changes, created
       implant, hemisphere, target1, target2, check_implant (cases.csv) and target, leads_in_place, stim_contacts, microdrive_mm, block_notes,
       check_leads_in_place, check_stim_contacts, check_target (blocks.csv), from every row whether checked or not
       case_status / block_status: that row's status from the cross-check (match, conflict, sheet_only, no_data; blank = no row or never checked)
@@ -66,8 +66,9 @@ def build_index(cleaned_root):
     rows = []
     for path in cleaned_files(cleaned_root):
         row = _read_row(path, cleaned_root)
-        case = cases[cases["study_id"] == row["patient"]]
-        match = blocks[(blocks["study_id"] == row["patient"]) & (blocks["block"] == row["block"])]
+        patient = row["patient"].lower() #Box has UG3003 where the tables have ug3003, so the match ignores case
+        case = cases[cases["study_id"].str.strip().str.lower() == patient]
+        match = blocks[(blocks["study_id"].str.strip().str.lower() == patient) & (blocks["block"] == row["block"])]
         if "stage" in blocks: #if the table ever gets a stage column, use it so stage1/stage2 blocks with the same name don't mix
             match = match[match["stage"].str.replace(" ", "") == row["stage"]]
         one_case, one_block = len(case) == 1, len(match) == 1 #more than one matching row = ambiguous, so it's left out
@@ -101,12 +102,14 @@ def build_index(cleaned_root):
 def _read_row(path, cleaned_root):
     #everything here is attributes or .shape, plus the small flag/epoc arrays; the signal arrays are never read
     rel = path.relative_to(cleaned_root)
-    row = {"path":str(path), "file":rel.as_posix(), "patient":rel.parts[0], "stage":rel.parts[1], "block":path.stem}
+    #stage is the folder path between patient and file: stageN for uh/UG, the session path (maybe "") for other cohorts
+    row = {"path":str(path), "file":rel.as_posix(), "patient":rel.parts[0], "stage":"/".join(rel.parts[1:-1]), "block":path.stem}
     with h5py.File(path, "r") as f:
         info, flags = f["info"].attrs, f["flags"]
         row["format"] = "bv" if str(f.attrs.get("source", "")).lower().endswith(".vhdr") else "tdt"
         row["duration"] = float(info.get("duration", np.nan))
         row["start"] = str(info.get("start", ""))
+        row["condition"], row["state"] = str(info.get("condition", "")), str(info.get("state", "")) #blank on files cleaned before cohorts.py
         row["size_mb"] = round(path.stat().st_size / 1e6, 1)
         types, fs, subtypes, sat = {}, {}, [], {}
         for name, g in f["streams"].items():
@@ -130,7 +133,8 @@ def _read_row(path, cleaned_root):
                 events[t] = events.get(t, 0) + (g["onset"].shape[0] if "onset" in g else g["ts"].shape[0])
         row["events"] = ";".join(sorted(events))
         row["n_video_frames"] = events.get("video", 0)
-        row["n_stim_events"] = events.get("stim", 0)
+        #pulses = rows of /stim (tdt pulse stores, brainvision rising edges of stim codes), never the settings stores; older files: stim epocs
+        row["n_stim_events"] = f["stim/time"].shape[0] if "stim/time" in f else events.get("stim", 0)
         row["video"] = str(info.get("video", ""))
         #the stim monitor is left out of the total: it's the stimulator's output, and its unused channels sit constant (which find_saturation counts as saturated)
         row["saturated_s"] = _union_seconds([iv for t, ivs in sat.items() if t != "stim_monitor" for iv in ivs])
@@ -143,6 +147,7 @@ def _read_row(path, cleaned_root):
         else:
             row["n_gaps"], row["gap_s"] = 0, 0.0
         row["dnu"] = int(flags.attrs.get("dnu", 0))
+        row["clean_version"] = int(f.attrs.get("clean_version", 0)) #0 = made before clean_version existed
         row["clean_dbs_commit"] = str(f.attrs.get("clean_dbs_commit", ""))
         row["uncommitted_changes"] = int(f.attrs.get("clean_dbs_uncommitted_changes", 1))
         row["created"] = str(f.attrs.get("created", ""))
@@ -259,10 +264,12 @@ def qc_block(h5_path, sample_s=1.0):
         if int(f["flags"].attrs.get("dnu", 0)):
             issues.append("block is marked dnu (do not use)")
     #compare with the verified OR data sheet row, when there is one
-    root, patient, block = h5_path.parents[2], h5_path.parents[1].name, h5_path.stem
+    #the cleaned root is the folder holding _cases; other cohorts sit deeper than <patient>/<stage>/, so it isn't always parents[2]
+    root = next((p for p in h5_path.parents if (p / "_cases").is_dir()), h5_path.parents[2])
+    patient, block = h5_path.relative_to(root).parts[0], h5_path.stem
     _, blocks = load_cases(root)
     blocks = blocks[blocks["verified"].str.strip() != ""] #only hand-checked rows, load_cases now gives every row
-    match = blocks[(blocks["study_id"] == patient) & (blocks["block"] == block)]
+    match = blocks[(blocks["study_id"].str.strip().str.lower() == patient.lower()) & (blocks["block"] == block)] #ignores case, like build_index
     if len(match) == 1 and match.iloc[0].get("leads_in_place", "").strip().isdigit():
         leads = int(match.iloc[0]["leads_in_place"])
         if leads > 0 and lead_streams == 0:
@@ -286,9 +293,9 @@ def qc_report(cleaned_root, sample_s=1.0):
             issues = qc_block(path, sample_s)
         except Exception as error: #a file that won't even open is the biggest issue of all
             issues = [f"could not read: {error}"]
-        rows.append({"file":rel.as_posix(), "patient":rel.parts[0], "stage":rel.parts[1], "block":path.stem, "n_issues":len(issues), "issues":" | ".join(issues)})
+        rows.append({"file":rel.as_posix(), "patient":rel.parts[0], "stage":"/".join(rel.parts[1:-1]), "block":path.stem, "n_issues":len(issues), "issues":" | ".join(issues)})
     for path in sorted(cleaned_root.rglob("*.h5.part")):
         rel = path.relative_to(cleaned_root)
-        rows.append({"file":rel.as_posix(), "patient":rel.parts[0], "stage":rel.parts[1] if len(rel.parts) > 2 else "", "block":path.name[:-len(".h5.part")],
+        rows.append({"file":rel.as_posix(), "patient":rel.parts[0], "stage":"/".join(rel.parts[1:-1]), "block":path.name[:-len(".h5.part")],
                      "n_issues":1, "issues":"leftover .part file, cleaning crashed or is still running; delete it and clean again"})
     return pd.DataFrame(rows, columns=["file", "patient", "stage", "block", "n_issues", "issues"])

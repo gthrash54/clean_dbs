@@ -12,34 +12,90 @@ def find_saturation(stream, min_ms=1.0):
     min_ms: shortest flat stretch that counts, in milliseconds
     Returns: dictionary of arrays, one entry per stretch: channel, start, end (seconds from the start of the recording)
     Heads up: streams stored as whole mV (some older blocks) are flat a lot just from rounding, so treat flags there as a hint.
+    A channel flat for the whole block counts only if it sits at the stream's rail (stream["rail"], from read_tdt); flat at 0 is just unused.
     """
-    data, fs = stream["data"], float(stream["fs"])
-    min_samples = max(2, int(round(min_ms / 1000 * fs)))
-    channel, start, end = [], [], []
-    for row, number in enumerate(stream["channels"]):
-        x = data[row]
-        if x.size == 0 or x.max() == x.min(): #a channel flat the whole time (unused, unplugged) isnt saturation, qc_block flags those
-            continue
-        for extreme in (x.max(), x.min()):
-            hits = np.flatnonzero(x == extreme)
-            if hits.size < min_samples:
+    runs = Saturation(stream, min_ms)
+    runs.add(stream["data"])
+    return runs.result()
+
+
+class Saturation:
+    """
+    find_saturation one time window at a time, so a recording never has to be in memory all at once (clean_block uses it).
+    Input:
+    stream: one entry from result["streams"] (needs fs, start_time, channels; data isn't used; rail optional)
+    min_ms: shortest flat stretch that counts, in milliseconds
+    Use: add(window) for each channels x samples window in time order, then result() gives what find_saturation gives
+    Per channel it keeps the max and min so far and the runs sitting at them; a window with a new max (or min) drops the old runs,
+    and a run still going at the end of a window is joined to one starting on the next window's first sample.
+    """
+    def __init__(self, stream, min_ms=1.0):
+        self.fs, self.start_time, self.channels = float(stream["fs"]), stream["start_time"], stream["channels"]
+        self.rail = float(stream.get("rail", np.nan)) #amplifier ceiling in volts (tdt), NaN = unknown (brainvision)
+        self.min_samples = max(2, int(round(min_ms / 1000 * self.fs)))
+        n = len(self.channels)
+        self.n = 0 #samples seen so far
+        self.has_nan = np.zeros(n, dtype=bool) #a NaN anywhere makes max/min NaN, so the whole-array version never flags that channel
+        self.extreme = [[None] * n, [None] * n] #[max per channel, min per channel] so far
+        self.runs = [[[] for _ in range(n)], [[] for _ in range(n)]] #[start, stop) sample pairs at that extreme
+
+    def add(self, x):
+        if x.shape[1] == 0:
+            return
+        for k, value in enumerate((x.max(axis=1), x.min(axis=1))):
+            for row in range(x.shape[0]):
+                v = value[row]
+                if np.isnan(v):
+                    self.has_nan[row] = True
+                    continue
+                best = self.extreme[k][row]
+                if best is None or (v > best if k == 0 else v < best):
+                    self.extreme[k][row], self.runs[k][row] = v, []
+                elif v != best:
+                    continue
+                hits = np.flatnonzero(x[row] == v)
+                #split the hits into runs of back-to-back samples
+                breaks = np.flatnonzero(np.diff(hits) > 1)
+                starts = np.concatenate(([hits[0]], hits[breaks + 1])) + self.n
+                stops = np.concatenate((hits[breaks], [hits[-1]])) + 1 + self.n
+                runs = self.runs[k][row]
+                if runs and runs[-1][1] == starts[0]: #the last run reached the end of the previous window, so it carries on here
+                    runs[-1][1] = int(stops[0])
+                    starts, stops = starts[1:], stops[1:]
+                runs += [[int(a), int(b)] for a, b in zip(starts, stops)]
+                #drop short runs now (whole-mV streams can sit at their max thousands of times), but not one still going at the window's end
+                self.runs[k][row] = [r for r in runs if r[1] - r[0] >= self.min_samples or r[1] == self.n + x.shape[1]]
+        self.n += x.shape[1]
+
+    def result(self):
+        channel, start, end = [], [], []
+        for row, number in enumerate(self.channels):
+            if self.n == 0 or self.has_nan[row]:
                 continue
-            #split the hits into runs of back-to-back samples
-            breaks = np.flatnonzero(np.diff(hits) > 1)
-            run_starts = np.concatenate(([hits[0]], hits[breaks + 1]))
-            run_ends = np.concatenate((hits[breaks], [hits[-1]]))
-            keep = (run_ends - run_starts + 1) >= min_samples
-            channel += [int(number)] * int(keep.sum())
-            start += list(stream["start_time"] + run_starts[keep] / fs)
-            end += list(stream["start_time"] + (run_ends[keep] + 1) / fs)
-    return {"channel":np.asarray(channel, dtype=np.int64), "start":np.asarray(start, dtype=np.float64), "end":np.asarray(end, dtype=np.float64)}
+            #a channel flat the whole time is saturated if it sits at the rail (uh3002 dbs1_clinicaltesting: 7 of 8 channels the whole block);
+            #anywhere else (0, unused, unplugged) it isnt, qc_block flags those
+            if self.extreme[0][row] == self.extreme[1][row]:
+                if abs(self.extreme[0][row]) >= self.rail * (1 - 1e-3): #False when rail is NaN
+                    channel.append(int(number))
+                    start.append(self.start_time)
+                    end.append(self.start_time + self.n / self.fs)
+                continue
+            for k in (0, 1): #max then min, same order as before
+                runs = np.asarray(self.runs[k][row], dtype=np.int64).reshape(-1, 2)
+                keep = (runs[:, 1] - runs[:, 0]) >= self.min_samples
+                channel += [int(number)] * int(keep.sum())
+                start += list(self.start_time + runs[keep, 0] / self.fs)
+                end += list(self.start_time + runs[keep, 1] / self.fs)
+        return {"channel":np.asarray(channel, dtype=np.int64), "start":np.asarray(start, dtype=np.float64), "end":np.asarray(end, dtype=np.float64)}
 
 
-def make_flags(result, block):
+def make_flags(result, block, saturation=None):
     """
     Input:
     result: the dictionary from read_tdt / read_bv
     block: the raw block folder or .vhdr it came from
+    saturation: optional {stream name: find_saturation result} already worked out window by window (clean_block);
+                left out, it's found from each stream's data
     Returns: dictionary for result["flags"]:
       saturation_<stream>: channel, start, end of flat-at-the-ceiling stretches
       new_segments (brainvision only): time, missing, is_gap for every NewSegment marker, see new_segment_gaps
@@ -47,7 +103,7 @@ def make_flags(result, block):
     """
     flags = {}
     for name, stream in result["streams"].items():
-        flags[f"saturation_{name}"] = find_saturation(stream)
+        flags[f"saturation_{name}"] = saturation[name] if saturation is not None else find_saturation(stream)
     if Path(block).suffix.lower() == ".vhdr":
         flags["new_segments"] = new_segment_gaps(block)
     flags["dnu"] = np.int8("dnu" in Path(block).name.lower()) #Path so it works with Windows backslashes too

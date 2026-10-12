@@ -7,19 +7,27 @@ function out = clean_dbs_load(h5file, varargin)
 %   h5file: a cleaned .h5 file made by scripts/clean.py (e.g. <out>/uh3021/stage1/clinical_dbs1.h5)
 %   optional name/value pairs:
 %     'types': cell of stream types to load, e.g. {'lfp'} or {'mer','emg'} (default: every stream)
-%              types are lfp, mer, emg, audio, stim_monitor, unknown; epocs, scalars and flags always load
+%              types are lfp, eeg, mer, emg, audio, accel, joystick, force, aux, unused, stim_monitor, unknown; epocs, scalars and flags always load
 %     't1', 't2': time window in seconds from the start of the recording (default 0 and 0 = whole recording)
 %              only the samples inside the window are read from disk, so this is fast even on 1+ GB files
 %     'time': true adds a .time vector (seconds) to each stream (default false, it costs as much memory as a channel)
 %   Returns: out, a struct laid out like the file
 %     out.streams.<name>: data (channels x samples, single, volts), fs, start_time (time of the first sample read),
-%                         channels, device, type, subtype, units, name (the name in the file)
-%     out.epocs.<name>:   onset, offset, data (TDT only), type, name; only events with t1 <= onset < t2
+%                         channels, device, type, subtype, units, rail, name (the name in the file), and per channel
+%                         channel_names, channel_group, channel_contact, ... (brainvision streams are one per channel type)
+%     out.epocs.<name>:   onset, offset, data (TDT only), type, name (brainvision also meaning, evidence, kind, marker);
+%                         only events with t1 <= onset < t2
 %     out.scalars.<name>: ts, data (parameters x events, e.g. eS1p stim settings), type, name; only t1 <= ts < t2
-%     out.info:           block, start, duration, subject, video, ... (every attribute the reader saved)
+%     out.stim:           one entry per stim pulse with t1 <= time < t2: time, source, voice, channel, amplitude_ua, period_ms,
+%                         count, confirmed (+ brainvision: time_clock, marker_lag_ms and sidecar columns like pulse_width_us);
+%                         text columns are cell arrays of char, numbers are double columns
+%     out.sidecars.<name>: stimulator / task files next to a brainvision recording, one field per column, plus kind, file,
+%                         matched, match_* (always whole, not cut to the window)
+%     out.info:           block, start, duration (from the streams), duration_header, subject, video, condition, state,
+%                         case_status, ... (every attribute the cleaning saved)
 %     out.flags:          saturation_<stream> (channel, start, end), new_segments (time, missing, is_gap), dnu
 %                         flags always cover the whole recording, even with a time window
-%     out.provenance:     source, clean_dbs_commit, created, package versions
+%     out.provenance:     clean_version, source, source_bytes, clean_dbs_commit, created, package versions
 %   Names that aren't valid MATLAB field names are fixed with matlab.lang.makeValidName; .name keeps the original.
 %   Numbers come back as double, except stream data which stays single (double would double the memory).
 %
@@ -51,7 +59,7 @@ if t2 == 0
 end
 
 meta = h5info(h5file); %only the layout and attributes, no data is read yet
-out = struct('streams', struct(), 'epocs', struct(), 'scalars', struct(), 'info', struct(), 'flags', struct(), 'provenance', attrs(meta));
+out = struct('streams', struct(), 'epocs', struct(), 'scalars', struct(), 'stim', struct(), 'sidecars', struct(), 'info', struct(), 'flags', struct(), 'provenance', attrs(meta));
 
 %streams: read only the samples inside the window
 for g = child_groups(meta, '/streams')
@@ -109,6 +117,30 @@ for g = child_groups(meta, '/scalars')
     out.scalars.(valid(sc.name)) = sc;
 end
 
+%stim is one column per dataset, all the same length; keep the pulses inside the window
+stim = child_groups(meta, '');
+stim = stim(strcmp({stim.Name}, '/stim'));
+if ~isempty(stim)
+    out.stim = read_table(h5file, stim);
+    if isfield(out.stim, 'time')
+        keep = out.stim.time >= t1 & out.stim.time < t2;
+        for c = fieldnames(out.stim)'
+            out.stim.(c{1}) = out.stim.(c{1})(keep);
+        end
+    end
+end
+
+%sidecars: the stimulator / task files found next to a brainvision recording, whole (their own times, not cut to the window)
+for g = child_groups(meta, '/sidecars')
+    sc = read_table(h5file, g);
+    a = attrs(g); %kind, file, matched, match_*
+    for c = fieldnames(a)'
+        sc.(c{1}) = a.(c{1});
+    end
+    sc.name = leaf(g.Name);
+    out.sidecars.(valid(sc.name)) = sc;
+end
+
 %info is all attributes; flags are attributes (dnu) plus one group per flag
 info = child_groups(meta, '');
 info = info(strcmp({info.Name}, '/info'));
@@ -126,6 +158,29 @@ if ~isempty(flags)
         end
         out.flags.(valid(leaf(g.Name))) = f;
     end
+end
+end
+
+
+function t = read_table(h5file, g)
+%Input: file, a group from h5info holding one dataset per column (/stim, /sidecars/<name>). Returns: struct of columns,
+%text as cell arrays of char, numbers as double columns
+t = struct();
+for d = reshape(g.Datasets, 1, [])
+    if isempty(d.Dataspace.Size) || any(d.Dataspace.Size == 0)
+        v = zeros(0, 1); %h5read errors on empty datasets (a block with no stim)
+        if strcmp(d.Datatype.Class, 'H5T_STRING')
+            v = cell(0, 1);
+        end
+    else
+        v = h5read(h5file, [g.Name '/' d.Name]);
+    end
+    if isstring(v) || iscell(v) %text columns (source, voice)
+        v = cellstr(string(v(:)));
+    else
+        v = double(v(:));
+    end
+    t.(valid(d.Name)) = v;
 end
 end
 

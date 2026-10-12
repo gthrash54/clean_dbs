@@ -10,7 +10,7 @@ from clean_dbs.crosscheck import crosscheck, read_crosswalk
 parser = argparse.ArgumentParser(description="Cross-check cases.csv and blocks.csv against the recordings, adds check_* / status / check_detail columns")
 parser.add_argument("cleaned_root", help="top of the cleaned set, the tables are in <cleaned_root>/_cases/")
 parser.add_argument("data_root", help="raw data, one folder per study ID (e.g. ~/DBS Data)")
-parser.add_argument("--box", help="Box raw data folder as mounted (e.g. ~/Box/UAB DBS Raw Data); needed for stim checks and blocks that aren't local")
+parser.add_argument("--box", help="Box raw data folder as mounted (e.g. ~/Box/UAB DBS Data/UAB DBS Raw Data); needed for stim checks and blocks that aren't local")
 parser.add_argument("--crosswalk", help="crosswalk.csv (study_id, block, box_path), local only")
 parser.add_argument("--cache", default=str(Path.home() / "clean_dbs_crosscheck_tmp"), help="folder for cached per-block results")
 parser.add_argument("--no-stim", action="store_true", help="skip the Box reads, leads and block checks only")

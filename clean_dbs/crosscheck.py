@@ -12,6 +12,7 @@ from .block_info import describe_block
 from .find_blocks import find_all_blocks
 from .channel_map import connected_contacts, _pz5_stores
 from .stim_events import stim_events
+from .read_tdt import _events
 
 #what the OR sheets (cases.csv / blocks.csv, typed from the handwritten sheets) are checked against, and how:
 #  block exists: a tdt folder or .vhdr with that name under the data root, or on Box (uh3020/uh3024 aren't staged locally)
@@ -28,13 +29,22 @@ LEAD_STORES = ("ecos", "dbs1", "LFP1")
 #the 536.87 ceiling, 350-420 kOhm through an unconnected adapter (uh3012/13 baselines) or exactly 0 (uh3008 ecogimpedance)
 LEAD_KOHM = (0.05, 100.0)
 MIN_CONNECTED = 4 #a lead group counts as plugged in when at least 4 of its 8 contacts are
-#during stim an unplugged contact is flat next to its lead: under 10% of the lead's loudest contact (catches "234" gangs and ring 8),
-#or under 25% of the loudest contact on its own level (2-4 or 5-7), tuned on uh3021 (flat 0.03-0.14, plugged ring 8 0.17-0.21 of the max)
-FLAT_RATIO, LEVEL_RATIO = 0.1, 0.25
-LEVELS = [(2, 3, 4), (5, 6, 7)]
-MIN_ARTIFACT_UV = 200 #a lead with no channel above this during stim isn't picking up the stim at all, so nothing is called flat
+#an unplugged contact isn't truly flat during stim (it picks up some of the artifact), it's just much quieter than where it would be.
+#tuned on uh3021, uh3005, uh3008 against sheets that are clear (increments "2-3-4", crosstalk "DBS1 234; DBS2 234", induction blocks):
+#  one segment off: under 0.35 of the median of the other two on level 2-4 (flat 0.04-0.30 of them, plugged 0.8-1.2,
+#    a slightly weak channel on a lead that isn't stimulating 0.42),
+#    under 0.3 of them on level 5-7 (plugged level 5-7 segments next to a stimulated level read down to 0.33)
+#  "234" all off: level 2 mean under 0.4 of level 3 mean (flat 0.03-0.30, plugged 0.9 and up; level 2 is never far from the stim otherwise)
+#  any segment under 10% of the lead's loudest contact
+#  rings 1 and 8 have no siblings and a plugged ring 8 can read under 10% of the max, so a ring only counts when a whole level is off
+#    and the ring is no louder than 1.25x those segments (flat ring 0.9-1.2x, plugged ring 1.5x and up) or under 5% of the lead's max
+#    (flat 0.025, plugged down to 0.099)
+#  nothing is called flat on a lead whose loudest contact is under 2000 uV: that lead isn't carrying the stim (other lead, or no stim)
+LEVEL_RATIO = {(2, 3, 4):0.35, (5, 6, 7):0.3}
+GANG_RATIO, FLAT_RATIO, RING_RATIO, RING_MAX_RATIO = 0.4, 0.1, 1.25, 0.05
+MIN_ARTIFACT_UV = 2000
 WINDOW_S = 0.5 #seconds read per stim window
-MAX_WINDOWS = 12 #stim windows read per block, spread over its trains
+MAX_WINDOWS = 6 #stim windows read per block, spread over its trains (each is a slow random read of the .tev on Box)
 BOX_PAUSE_S = 0.3 #pause between reads on Box
 _CASE_FOLDERS = {} #study ID -> its folder on the Box mount, filled as needed
 
@@ -82,7 +92,7 @@ def read_crosswalk(path):
 def find_box_block(box_root, crosswalk, study_id, block):
     """
     Input:
-    box_root: the Box raw data folder as mounted (e.g. ~/Box/UAB DBS Raw Data)
+    box_root: the Box raw data folder as mounted (e.g. ~/Box/UAB DBS Data/UAB DBS Raw Data)
     crosswalk: from read_crosswalk
     study_id, block: as in blocks.csv
     Returns: path of that block on the mount, or None. Cases missing from the crosswalk are looked up by their study ID folder.
@@ -201,7 +211,7 @@ def _bv_leads(vhdr):
     if vmrk.is_file():
         m = re.search(r"New Segment,[^\n]*,(\d{8})(\d\d)(\d\d)(\d\d)", vmrk.read_text(errors="ignore"))
         out["start_s"] = int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4)) if m else None
-    checks = connected_contacts(vhdr).get("dbs")
+    checks = connected_contacts(vhdr).get("brainvision")
     if checks is not None and groups:
         pick = checks["time"] == checks["time"].max() #last check before the recording
         on = dict(zip(checks["channel"][pick].tolist(), _plugged(checks["impedance"][pick])))
@@ -219,10 +229,11 @@ def _plugged(kohm):
 def _stim_windows(box, store, n_channels):
     #tsq-only read of the stim stores, then short windows of the lead store in the middle of each stim train
     with contextlib.redirect_stdout(io.StringIO()):
-        raw = tdt.read_block(str(box), evtype=["epocs", "scalars"])
+        headers = tdt.read_block(str(box), headers=1)
+        raw = tdt.read_block(str(box), headers=headers, evtype=["epocs", "scalars"])
     time.sleep(BOX_PAUSE_S)
-    result = {"epocs":{k:{"onset":e.onset, "offset":e.offset, "data":e.data} for k, e in raw.epocs.items()},
-              "scalars":{k:{"ts":np.asarray(s.ts, dtype=np.float64), "data":np.atleast_2d(np.asarray(s.data, dtype=np.float64))} for k, s in raw.scalars.items()}}
+    #same events read_tdt gives, so the uh3001/uh3006 epocs with one onset too many are fixed the same way (read_tdt._match_epoc)
+    result = _events(raw, headers)
     ev = stim_events(result, box)
     trains = []
     for voice in np.unique(ev["voice"]):
@@ -242,7 +253,7 @@ def _stim_windows(box, store, n_channels):
     spots = []
     for i, tr in enumerate(trains):
         dur = tr["t1"] - tr["t0"]
-        n = int(np.clip(dur // 20, 1, 4))
+        n = int(np.clip(dur // 30, 1, 2))
         spots += [(i, tr["t0"] + dur * (k + 1) / (n + 1)) for k in range(n)]
     if len(spots) > MAX_WINDOWS:
         spots = [spots[int(j)] for j in np.linspace(0, len(spots) - 1, MAX_WINDOWS)]
@@ -264,15 +275,21 @@ def flat_contacts(std):
     """
     Input:
     std: std in uV of one lead's 8 contacts during a stim window (contact 1 first)
-    Returns: list of contacts (1-8) that are flat, i.e. unplugged from the amp because they're on the stimulator
+    Returns: list of contacts (1-8) that are flat, i.e. unplugged from the amp because they're on the stimulator (rules above)
     """
     s = np.asarray(std, dtype=np.float64)
-    if len(s) != 8 or s.max() <= MIN_ARTIFACT_UV:
+    if len(s) != 8 or s.max() < MIN_ARTIFACT_UV:
         return []
-    flat = {k + 1 for k in range(8) if s[k] < FLAT_RATIO * s.max()}
-    for level in LEVELS:
-        top = max(s[c - 1] for c in level)
-        flat |= {c for c in level if top > MIN_ARTIFACT_UV and s[c - 1] < LEVEL_RATIO * top}
+    flat = {c for c in range(2, 8) if s[c - 1] < FLAT_RATIO * s.max()}
+    for level, ratio in LEVEL_RATIO.items():
+        for c in level:
+            if s[c - 1] < ratio * np.median([s[o - 1] for o in level if o != c]):
+                flat.add(c)
+    if np.mean(s[1:4]) < GANG_RATIO * np.mean(s[4:7]):
+        flat |= {2, 3, 4}
+    for level in LEVEL_RATIO:
+        if set(level) <= flat: #only next to a whole level that's off; one quiet segment in an increment sits close to a plugged ring 8
+            flat |= {c for c in (1, 8) if s[c - 1] < RING_RATIO * max(s[o - 1] for o in level) or s[c - 1] < RING_MAX_RATIO * s.max()}
     return sorted(flat)
 
 
@@ -474,6 +491,8 @@ def _check_stim(r, ev, case, detail):
     if data is None:
         if not ev.get("stim_read"):
             return "sheet_only", "sheet_only"
+        if sheet_text and not trains and parse_contacts(sheet_text, r["target"], case) is None:
+            return "sheet_only", "sheet_only" #bipolar / patch notation = an external stimulator, which tdt doesn't log
         if sheet_text and not trains:
             detail.append(f"stim_contacts: sheet {sheet_text}, but the recording has no stim pulses")
             return "conflict", "sheet_only"
