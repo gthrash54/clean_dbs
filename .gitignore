@@ -35,3 +35,6 @@ logs/
 *.toc
 *.synctex.gz
 *.listing
+
+# claude code working copies (agent worktrees), never commit
+.claude/

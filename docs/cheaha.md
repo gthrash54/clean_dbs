@@ -31,7 +31,7 @@ Put the code in `$USER_DATA`:
 
 ```
 cd $USER_DATA
-git clone <clean_dbs repo url> clean_dbs
+git clone https://github.com/gthrash54/clean_dbs.git clean_dbs
 cd clean_dbs
 ```
 
