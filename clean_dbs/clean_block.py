@@ -1,8 +1,9 @@
 from pathlib import Path
-import re
 from clean_dbs.read_tdt import read_tdt
 from clean_dbs.read_bv import read_bv
 from clean_dbs.save_h5 import save_h5
+from clean_dbs.block_info import output_path
+from clean_dbs.flags import make_flags
 
 def clean_block(block_dir, out_root):
     """
@@ -13,21 +14,13 @@ def clean_block(block_dir, out_root):
     """
     block_dir = Path(block_dir)
     out_root = Path(out_root)
-    patient = block_dir.parent.parent.name
-    #folder names vary ("stage1 surgery", "stage 2 surgery", "stage2 surgery (sedated, not GA)"), so pull out just "stage" + the number
-    match = re.search(r"stage\s*(\d)", block_dir.parent.name, re.IGNORECASE)
-    if match is None:
-        raise ValueError(f"Can't tell the stage from {block_dir.parent.name!r}, expected a folder like 'stage1 surgery' above {block_dir.name}")
-    stage = "stage" + match.group(1)
-    is_bv = block_dir.suffix.lower() == ".vhdr"
-    name = block_dir.stem if is_bv else block_dir.name #stem drops the .vhdr, tdt block folders keep their full name
-    out_path = out_root / patient / stage / (name + ".h5")
+    out_path = output_path(block_dir, out_root) #works out patient/stage/name, see block_info.py
     if out_path.exists():
         return out_path
-    if is_bv: #brainvision is a .vhdr file, tdt is a block folder
+    if block_dir.suffix.lower() == ".vhdr": #brainvision is a .vhdr file, tdt is a block folder
         r = read_bv(block_dir)
     else:
         r = read_tdt(block_dir)
-    #cleaning goes here(next)
+    r["flags"] = make_flags(r, block_dir) #saturation, new segments, dnu, stored as notes, the data isn't changed
     save_h5(r, out_path, block_dir)
     return out_path

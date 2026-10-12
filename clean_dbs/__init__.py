@@ -6,4 +6,5 @@ from .save_h5 import save_h5
 from .find_blocks import find_bv_recordings
 from .clean_block import clean_block
 from .find_blocks import find_all_blocks
-from .block_info import describe_block, missing_files
+from .block_info import describe_block, missing_files, output_path
+from .flags import make_flags

@@ -51,6 +51,8 @@ r["streams"]   one entry per signal (TDT: "ecos", "emgg", "mic_", ...; BrainVisi
     ["fs"]          exact sampling rate in Hz (e.g. 48828.125, not rounded)
     ["start_time"]  time of the first sample, in seconds from the start of the recording
     ["channels"]    channel numbers
+    ["device"]      which device recorded it (e.g. ecogdbs, emg, microphone, brainvision)
+    ["units"]       always "V"
 
 r["epocs"]     one entry per marker type (TDT: "Cam1", "PeA_", ...; BrainVision: "R15", "S13", ...)
     ["onset"]       when each marker starts, in seconds from the start of the recording
@@ -89,10 +91,11 @@ MATLAB only converts one level at a time, so you need a `struct()` at each level
 
 - **Wrong folder for TDT.** Point at a single block (like `clinical_dbs1`), not `stage1 surgery`. It'll tell you if you get this wrong.
 - **Incomplete copies.** A lot of the local copies only have the small index files and are missing the actual signal (`.tev` for TDT, `.eeg` for BrainVision). Box has the full recordings. It'll tell you which file is missing.
-- **Everything is in volts.** BrainVision files store microvolts, but the reader converts them, so both rigs match. Multiply by 1e6 when you want µV for a plot.
+- **Everything is in volts.** BrainVision files store microvolts, and some older TDT blocks (uh3002, uh3003) store whole numbers in µV or mV. The readers convert all of it, so every rig matches. Multiply by 1e6 when you want µV for a plot.
+- **Some older microelectrode channels are basically unusable.** On uh3002 the spike and micro/macro LFP stores were saved as whole millivolts, so they only take a few flat values. That's how they were recorded, the code can't get the detail back.
 - **Marker names depend on the rig.** On the recording I tested (uh3 cohort, stage 2), R15 looks like the start of each stim pulse and R11 comes 60 µs later. Other patients use S13/S15 and so on. Check what they mean for your rig before you rely on them.
-- **NewSegment markers mean gaps.** If a BrainVision recording has `NewSegment` markers, the recording was paused and restarted there. Don't filter across those points without handling the gap.
-- **Some channels saturate.** Some TDT blocks hit the amplifier ceiling (about 0.537 V) for a few seconds. 
+- **Check NewSegment markers.** BrainVision writes a `NewSegment` marker when a recording is paused and restarted, but one recording I checked has 334 of them, some only 23 ms apart. They're saved under `/flags/new_segments` in the cleaned file. Figure out what they mean for your rig before you filter across them.
+- **Some channels saturate.** Some TDT blocks hit the amplifier ceiling (about 0.537 V) for a few seconds. Cleaning flags these under `/flags/saturation_<stream>` (channel, start, end) but doesn't change the data. 
 
 ## What's in here
 

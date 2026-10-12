@@ -31,3 +31,14 @@ def missing_files(block):
         return [] if (block.parent / data_file).is_file() else [data_file]
     #tdt keeps the signal in .tev (or .sev files on some rigs)
     return [] if any(block.glob("*.tev")) or any(block.glob("*.sev")) else [".tev"]
+
+
+def output_path(block, out_root):
+    """
+    Input:
+    block: a tdt block folder or a brainvision .vhdr file
+    out_root: top of the cleaned set
+    Returns: where that block's cleaned file goes, out_root/<patient>/<stage>/<block>.h5
+    """
+    info = describe_block(block)
+    return Path(out_root) / info["patient"] / info["stage"] / (info["block"] + ".h5")

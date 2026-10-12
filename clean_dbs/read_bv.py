@@ -32,7 +32,7 @@ def read_bv(vhdr_path, t1=0, t2=0):
         t2 = None                #bc tmax=0 means stop at 0 seconds in mne
     data = raw.get_data(tmin =t1, tmax=t2)
     out = {"streams":{},"epocs":{},"info":{} }
-    out["streams"]["dbs"] = {"data":data.astype(np.float32), "fs":raw.info["sfreq"], "start_time":t1, "channels":np.arange(1, len(raw.ch_names)+1)}
+    out["streams"]["dbs"] = {"data":data.astype(np.float32), "fs":raw.info["sfreq"], "start_time":t1, "channels":np.arange(1, len(raw.ch_names)+1), "device":"brainvision", "units":"V"}
     for name in np.unique(raw.annotations.description): #epocs loop
         pick = (raw.annotations.description == name) & (raw.annotations.onset >= t1)
         if t2 is not None: #t2 is None when reading to the end, and comparing with None crashes

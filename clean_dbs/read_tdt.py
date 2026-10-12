@@ -29,12 +29,55 @@ def read_tdt(block_dir, t1=0, t2=0):
     out = {"streams":{},"epocs":{},"info":{} }
     with contextlib.redirect_stdout(io.StringIO()): #tdt prints the full path, which includes the subject folder
         raw = tdt.read_block(block_dir,t1=t1,t2=t2)
+    settings = _store_settings(block_dir)
     #ascontiguousarray: tdt hands back multi-channel arrays in a memory order MATLAB refuses to convert
     for name, s in raw.streams.items():
-        out["streams"][name] = {"data":np.ascontiguousarray(np.atleast_2d(s.data)), "fs":s.fs, "start_time":s.start_time, "channels":np.asarray(s.channel, dtype = np.int64)}
+        data, units = _to_volts(np.atleast_2d(s.data), settings.get(name, {}), name, block_dir)
+        out["streams"][name] = {"data":np.ascontiguousarray(data), "fs":s.fs, "start_time":s.start_time, "channels":np.asarray(s.channel, dtype = np.int64),
+                                "device":settings.get(name, {}).get("device", "unknown"), "units":units}
     #raw epocs are the event markers ie Cam 1
     for name, e in raw.epocs.items():
         out["epocs"][name] = {"onset":e.onset, "offset":e.offset, "data":e.data}# data is value tied to each event ie frame number for cam 1
     out["info"] = {"subject":raw.info.subject, "block": raw.info.blockname, "experiment":raw.info.experiment, "start": raw.info.start_date.isoformat(),
                           "duration":raw.info.duration.total_seconds()}
     return out
+
+#Synapse's "Scale" setting for Integer-16 stores: the whole numbers are in these units (checked on uh3002, where ecog sits around 33 = microvolts)
+SCALES = {"Unity":1.0, "Milli":1e-3, "Micro":1e-6, "Nano":1e-9}
+
+
+def _store_settings(block_dir):
+    """
+    Reads StoresListing.txt (written by Synapse next to every block) for each store's device, format and scale.
+    tdt.read_block doesn't read these, but older blocks store streams as whole numbers in uV or mV, so we need them.
+    Returns: {store name: {"device":..., "format":..., "scale":...}}, empty if there's no StoresListing.txt
+    """
+    listing = block_dir / "StoresListing.txt"
+    settings = {}
+    if not listing.is_file():
+        return settings
+    device, store = "", None
+    for line in listing.read_text(errors="ignore").splitlines():
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if key == "Object ID":
+            device = value.split(" - ")[0] #"ecog - Neural Stream Processor" -> "ecog"
+        elif key == "Store ID":
+            store = tdt.fix_var_name(value) if hasattr(tdt, "fix_var_name") else value.replace("/", "_") #match tdt's names ("PeA/" -> "PeA_")
+            settings[store] = {"device":device}
+        elif store is not None and key in ("Format", "Scale"):
+            settings[store][key.lower()] = value
+    return settings
+
+
+def _to_volts(data, setting, name, block_dir):
+    """
+    Float-32 stores are already volts. Integer-16 stores are whole numbers in the unit Synapse's Scale says, so multiply into volts.
+    Returns: (float32 data in volts, units label)
+    """
+    scale = setting.get("scale")
+    if data.dtype.kind == "f" and scale in (None, "Unity"): #every Float-32 store in the inventory so far is Unity
+        return data.astype(np.float32, copy=False), "V"
+    if scale not in SCALES:
+        raise ValueError(f"{name} in {block_dir.name} is stored as {data.dtype} with scale {scale!r}, can't convert to volts without StoresListing.txt")
+    return (data.astype(np.float32) * np.float32(SCALES[scale])), "V"
