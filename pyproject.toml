@@ -10,5 +10,8 @@ description = "Walker lab toolbox for loading and cleaning intraoperative DBS re
 requires-python = ">=3.10"
 dependencies = ["tdt", "numpy", "mne", "h5py", "pandas"]
 
+[project.optional-dependencies]
+dev = ["pytest"] #only needed to run the tests
+
 [tool.setuptools]
 packages = ["clean_dbs"]

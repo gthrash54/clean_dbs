@@ -20,11 +20,13 @@ def save_h5(result, out_path, source_dir):
       /streams/<name>/data       channels x samples, float32, volts
                                  (MATLAB's h5read flips it: you get samples x channels)
       /streams/<name>/channels   channel numbers
+      /streams/<name>/channel_names  contact names when known (brainvision now, tdt once we have the wiring)
       /streams/<name>            attributes: fs, start_time, device, units, type, subtype
       /epocs/<name>/onset, offset, data   attribute: type (video, stim, marker, other)
+      /stim/time, source, voice, channel, amplitude_ua, period_ms, count, confirmed (+ time_clock for brainvision)
       /scalars/<name>/ts, data          data is parameters x events (e.g. eS1p stim settings per pulse)
       /info                      attributes: whatever the reader put in info
-      /flags                     saturation_<stream>/channel,start,end; new_segments/time,missing,is_gap; attribute dnu (notes only, data unchanged)
+      /flags                     saturation_<stream>/channel,start,end; new_segments/time,missing,is_gap; impedance_<stream>/channel,time,frequency,impedance,connected; attribute dnu (notes only, data unchanged)
       /                          attributes: provenance (source, clean_dbs version, package versions, when)
 
     It writes to <name>.h5.part first and only renames to .h5 once everything is written,
@@ -39,6 +41,8 @@ def save_h5(result, out_path, source_dir):
             g = f.create_group(f"streams/{name}")
             _write_array(g, "data", np.asarray(s["data"], dtype=np.float32), signal=True)
             _write_array(g, "channels", np.asarray(s["channels"], dtype=np.int64))
+            if "channel_names" in s: #h5py needs its own string type, plain numpy text arrays dont save
+                g.create_dataset("channel_names", data=np.asarray(s["channel_names"], dtype=h5py.string_dtype()))
             g.attrs["fs"] = float(s["fs"])
             g.attrs["start_time"] = float(s["start_time"])
             g.attrs["device"] = str(s.get("device", "unknown")) #which Synapse gizmo / rig recorded it, e.g. ecogdbs, emg, microphone
@@ -59,6 +63,13 @@ def save_h5(result, out_path, source_dir):
             _write_array(g, "ts", np.asarray(sc["ts"], dtype=np.float64))
             _write_array(g, "data", np.asarray(sc["data"], dtype=np.float64)) #rows = parameters, columns = events
             g.attrs["type"] = str(sc.get("type", "unknown"))
+        stim = f.create_group("stim") #one row per stim pulse, see stim_events.py
+        for key, values in result.get("stim", {}).items():
+            values = np.asarray(values)
+            if values.dtype.kind == "U": #text columns (source, voice) need h5py's string type
+                stim.create_dataset(key, data=values.astype(object), dtype=h5py.string_dtype())
+            else:
+                _write_array(stim, key, values)
         info = f.create_group("info")
         for key, value in result["info"].items():
             info.attrs[key] = _attr_value(value)

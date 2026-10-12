@@ -18,7 +18,7 @@ def find_saturation(stream, min_ms=1.0):
     channel, start, end = [], [], []
     for row, number in enumerate(stream["channels"]):
         x = data[row]
-        if x.size == 0:
+        if x.size == 0 or x.max() == x.min(): #a channel flat the whole time (unused, unplugged) isnt saturation, qc_block flags those
             continue
         for extreme in (x.max(), x.min()):
             hits = np.flatnonzero(x == extreme)
@@ -63,6 +63,8 @@ def new_segment_gaps(vhdr_path, min_gap=0.001):
     Input:
     vhdr_path: the .vhdr (its .vmrk is found from the MarkerFile= line)
     min_gap: missing time (s) needed to count as a real gap; smaller differences are clock jitter
+    Heads up: every non-gap NewSegment shows exactly one sample of missing time, either brainvision drops one sample
+    per segment or the stamp is one sample late; we couldnt tell which, so only gaps over min_gap are treated as real
     Returns: dictionary of arrays, one entry per NewSegment after the first:
       time (s, on the recording's own time axis), missing (s of clock time with no samples before it), is_gap (1/0)
     """

@@ -85,7 +85,51 @@ x = single(ecos.data);      % 28 x samples, volts
 fs = ecos.fs;
 ```
 
-MATLAB only converts one level at a time, so you need a `struct()` at each level for now. I'm writing a small MATLAB helper that does it all in one call. Use `single()` for the data, not `double()`; `double()` doubles the memory.
+MATLAB only converts one level at a time, so you need a `struct()` at each level. Use `single()` for the data, not `double()`; `double()` doubles the memory. If you just want cleaned data in MATLAB, skip Python entirely and use `clean_dbs_load` (below).
+
+## Cleaning a whole folder
+
+```
+python scripts/clean.py "<raw folder>" "<cleaned folder>"
+```
+
+The raw folder can be the whole inventory, one patient, or one surgery folder. Each recording becomes `<cleaned folder>/<patient>/<stage>/<block>.h5` with:
+
+- the signals in volts, tagged by type (lfp, mer, emg, audio, stim_monitor) with channel names where we know them
+- the events (Cam1 video frames, stim pulses, markers) and the stimulator settings per pulse (eS1p)
+- flags: saturated stretches, real gaps in BrainVision recordings, impedance checks, dnu
+- where the raw data and the video are, and which version of this code made the file
+
+Blocks that are already cleaned get skipped, so adding a new patient is the same command. `clean_report.csv` in the cleaned folder lists every block as cleaned, skipped or failed with the reason. To run the whole inventory on Cheaha, see `docs/cheaha.md`.
+
+To find things across the cleaned set:
+
+```python
+from clean_dbs import build_index, find_clean, qc_report
+idx = build_index("<cleaned folder>")          # one row per block
+files = find_clean(idx, type="lfp", target="STN", implant="dual", max_saturated_s=0)
+```
+
+Case info (dual or single, hemisphere, targets, depths, stim contacts) comes from `<cleaned folder>/_cases/cases.csv` and `blocks.csv`, transcribed from the OR data sheets. Only rows someone has checked against the sheet (`verified` filled in) get used.
+
+## Loading a cleaned file in MATLAB (no Python needed)
+
+```matlab
+addpath("<path to clean_dbs>/matlab")
+r = clean_dbs_load("<cleaned folder>/uh3021/stage1/clinical_dbs1.h5", "types", {"lfp"}, "t1", 10, "t2", 20);
+x = r.streams.ecos.data;   % channels x samples, single, volts
+```
+
+Only the window you ask for is read from disk. Flags (like `r.flags.saturation_ecos`) cover the whole recording.
+
+## Running the tests
+
+```
+uv pip install -e ".[dev]"
+python -m pytest tests
+```
+
+They use small made-up files, so no recordings are needed.
 
 ## Things that will trip you up
 
@@ -101,10 +145,26 @@ MATLAB only converts one level at a time, so you need a `struct()` at each level
 
 ```
 clean_dbs/
-    read_tdt.py    reads a TDT block (stage 1)
-    read_bv.py     reads a BrainVision recording (stage 2)
-scripts/           one-off scripts
-examples/          examples (coming)
+    read_tdt.py        reads a TDT block (stage 1)
+    read_bv.py         reads a BrainVision recording (stage 2)
+    find_blocks.py     finds every recording under any folder
+    check_blocks.py    table of what's there and what's missing, before cleaning
+    clean_block.py     reads, tags and saves one recording
+    save_h5.py         writes the cleaned .h5
+    flags.py           saturation, BrainVision gaps, dnu
+    channel_map.py     channel names and impedance checks
+    datatypes.py       which streams are lfp, mer, emg, ...
+    block_info.py      patient, stage and output path for a recording
+    index.py           table of the cleaned set, find_clean, quick QC
+scripts/
+    clean.py           cleans a folder (or one Cheaha array task)
+    make_manifest.py   fixed list of recordings for Cheaha
+    clean_slurm.sh     the Cheaha job
+matlab/
+    clean_dbs_load.m   loads a cleaned file into a struct
+tests/                 small tests, no recordings needed
+docs/cheaha.md         running the whole inventory on Cheaha
+examples/              examples (coming)
 ```
 
 Recordings and anything made from them never go in this folder or in git. The `.gitignore` blocks the usual data files, but double check before you commit.

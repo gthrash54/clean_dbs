@@ -25,8 +25,8 @@ DEVICE_TYPES = {
 #event stores (tdt epocs/scalars, brainvision markers) -> type
 EVENT_TYPES = {
     "Cam1":"video", #one event per camera frame, data = frame number, lines frames up with the neural clock
-    "PeA_":"stim", "PeB_":"stim", "PeC_":"stim", "CnA_":"stim", #eStim pulse events, one per stimulator channel
-    "eS1p":"stim_params", #24 stimulator settings per pulse; row 2 looks like amplitude (uA) and row 5 the contact, unverified
+    "PeA_":"stim", "PeB_":"stim", "PeC_":"stim", "CnA_":"stim", #PeA_ = one event per pulse on voice A (its data is the period), CnA_ etc are its settings
+    "eS1p":"stim_params", #24 rows = period, count, amp (uA), duration (ms), delay (ms), channel for voices A-D, from the lab's Synapse experiment; period row lags one train, use PeA_ data instead
     "Note":"other", "Tick":"other",
 }
 

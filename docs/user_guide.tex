@@ -1,0 +1,188 @@
+\input{style}
+\renewcommand{\footname}{clean\_dbs \textperiodcentered\ User Guide}
+
+\begin{document}
+\doctitle{clean\_dbs}{Loading and cleaning our intraoperative DBS recordings}
+
+This is the Walker lab toolbox for our intraoperative DBS recordings. It reads both of our rigs (stage 1 surgery on TDT, stage 2 surgery on BrainVision) and turns every recording into one clean, consistent file that opens in Python or MATLAB. Preprocessing (filtering, referencing, ERNA) gets built on top of these cleaned files.
+
+Both rigs come out in the same layout, so anything you write on top of it works no matter which rig the data came from. It runs on Windows, Mac and Linux.
+
+If something breaks or doesn't make sense, message me: Garrett Thrash, \href{mailto:garrettthrash54@gmail.com}{garrettthrash54@gmail.com}.
+
+\begin{tip}{The short version}
+\begin{enumerate}[topsep=0pt]
+  \item Set it up once (Section 1).
+  \item Clean a folder: \code{python scripts/clean.py "<raw folder>" "<cleaned folder>"} (Section 3).
+  \item Load what you need in Python or MATLAB (Sections 4 and 5).
+\end{enumerate}
+\end{tip}
+
+% =============================================================================
+\section{Setup (one time)}
+
+You need two things: a copy of the \code{clean_dbs} folder, and \href{https://docs.astral.sh/uv/getting-started/installation/}{uv}, which installs Python and the packages for you.
+
+Open a terminal inside the \code{clean_dbs} folder (the outer one, with \code{README.md} in it) and run:
+\begin{codebox}
+uv venv --python 3.12
+uv pip install -e .
+\end{codebox}
+That makes a private Python for the toolbox in a folder called \code{.venv} and installs the toolbox and everything it needs into it. The \code{-e} means edits to the code take effect right away, with no reinstall.
+
+Every time you open a new terminal to use the toolbox, switch that Python on first:
+\begin{codebox}
+source .venv/bin/activate        # Mac / Linux
+.venv\Scripts\activate           # Windows
+\end{codebox}
+
+% =============================================================================
+\section{Reading one raw recording}
+
+With the \code{.venv} switched on, this works from any folder:
+\begin{codebox}
+from clean_dbs import read_tdt, read_bv
+
+# TDT (stage 1): point at ONE block folder, not the whole "stage1 surgery" folder
+r = read_tdt("<path to>/stage1 surgery/clinical_dbs1", t1=0, t2=10)
+
+# BrainVision (stage 2): point at the .vhdr file; the .eeg and .vmrk sit next to it
+r = read_bv("<path to>/stage 2 surgery/STN_dbs1.vhdr", t1=0, t2=10)
+\end{codebox}
+\code{t1} and \code{t2} are the start and end in seconds. Leave them out (or use 0) to read the whole recording. Full recordings are around 2\,GB, so use a window when you're just looking around.
+
+\subsection{What you get back}
+A dictionary with the same layout for both rigs:
+
+\begin{tabularx}{\textwidth}{@{}l Y@{}}
+\toprule
+\code{r["streams"]} & one entry per signal (TDT: \code{ecos}, \code{emgg}, \code{mic_}, \ldots; BrainVision: \code{dbs}) \\
+\quad \code{data} & channels $\times$ samples, in \textbf{volts}, always 2-D (one channel is 1 $\times$ samples) \\
+\quad \code{fs} & exact sampling rate in Hz (e.g.\ 48828.125, not rounded) \\
+\quad \code{start_time} & time of the first sample, in seconds from the start of the recording \\
+\quad \code{channels} & channel numbers \\
+\quad \code{device}, \code{units} & which device recorded it (ecogdbs, emg, microphone, brainvision); units are always V \\
+\midrule
+\code{r["epocs"]} & one entry per event type (TDT: \code{Cam1}, \code{PeA_}; BrainVision: \code{R15}, \code{S13}) \\
+\quad \code{onset}, \code{offset} & when each event starts and ends, in seconds \\
+\quad \code{data} & the value tied to each event (e.g.\ frame number for \code{Cam1}) \\
+\midrule
+\code{r["scalars"]} & TDT only: a vector of values per event, e.g.\ \code{eS1p} = the stimulator's settings for every pulse \\
+\code{r["info"]} & block name, start date and time, duration; TDT also gives subject and rig template \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+To get the time of every sample in a stream: \code{start_time + np.arange(n_samples) / fs}. Don't assume the first sample is exactly at \code{t1}; on TDT it's a few microseconds after.
+
+% =============================================================================
+\section{Cleaning a whole folder}
+
+\begin{codebox}
+python scripts/clean.py "<raw folder>" "<cleaned folder>"
+\end{codebox}
+The raw folder can be the whole inventory, one patient, or one surgery folder. Each recording becomes
+\code{<cleaned folder>/<patient>/<stage>/<block>.h5}, and each file holds:
+\begin{itemize}
+  \item the signals in volts, tagged by type (\textit{lfp, mer, emg, audio, stim\_monitor}), with channel names where we know them
+  \item the events (Cam1 video frames, stim pulses, markers) and a standard \textbf{stim table}: one row per pulse with time, contact, amplitude and period
+  \item \textbf{flags}: saturated stretches, real gaps in BrainVision recordings, impedance checks, and \textit{do not use}
+  \item where the raw data and the video live, and which version of this code made the file
+\end{itemize}
+
+Blocks that are already cleaned get skipped, so \textbf{adding a new patient is the same command}. \code{clean_report.csv} in the cleaned folder lists every block as cleaned, skipped or failed, with the reason. To check what's there before cleaning (for example, which recordings are missing their signal files), use \code{check_blocks("<raw folder>")}.
+
+For the whole inventory at once, run it on Cheaha; see the \textit{Cheaha Guide} PDF.
+
+\subsection{Finding things across the cleaned set}
+\begin{codebox}
+from clean_dbs import build_index, find_clean, qc_report
+idx = build_index("<cleaned folder>")      # one row per block, reads no signal so it's fast
+files = find_clean(idx, type="lfp", target="STN", implant="dual", max_saturated_s=0)
+\end{codebox}
+Case info (dual or single, hemisphere, targets, depths, stim contacts) comes from \code{_cases/cases.csv} and \code{_cases/blocks.csv} in the cleaned folder, transcribed from the OR data sheets. \textbf{Only rows someone has checked against the sheet} (the \code{verified} column filled in) get used.
+
+% =============================================================================
+\section{Loading a cleaned file in MATLAB}
+
+No Python needed:
+\begin{codebox}
+addpath("<path to clean_dbs>/matlab")
+r = clean_dbs_load("<cleaned folder>/uh3021/stage1/clinical_dbs1.h5", "types", {"lfp"}, "t1", 10, "t2", 20);
+x = r.streams.ecos.data;     % channels x samples, single, volts
+\end{codebox}
+Only the window you ask for is read from disk, so this is fast even on 1\,GB files. Flags (like \code{r.flags.saturation_ecos}) always cover the whole recording.
+
+% =============================================================================
+\section{Reading raw files from MATLAB through Python}
+
+Only needed if you want the raw readers instead of a cleaned file. Tell MATLAB which Python to use, once per session:
+\begin{codebox}
+pyenv(Version="<path to clean_dbs>/.venv/bin/python", ExecutionMode="OutOfProcess");
+% Windows: Version="<path to clean_dbs>\.venv\Scripts\python.exe"
+m = py.importlib.import_module("clean_dbs.read_tdt");
+r = struct(m.read_tdt("<path to block>", t2=10));
+ecos = struct(struct(r.streams).ecos);
+x = single(ecos.data);       % 28 x samples, volts
+\end{codebox}
+MATLAB only converts one level at a time, so you need a \code{struct()} at each level. Use \code{single()}, not \code{double()}; \code{double()} doubles the memory.
+
+% =============================================================================
+\section{Things that will trip you up}
+
+\begin{careful}{Before you trust a result}
+\begin{itemize}[topsep=0pt]
+  \item \textbf{Wrong folder for TDT.} Point at a single block (like \code{clinical_dbs1}), not \code{stage1 surgery}. It tells you if you get this wrong.
+  \item \textbf{Incomplete copies.} Many local copies only have the small index files and are missing the signal (\code{.tev} for TDT, \code{.eeg} for BrainVision). Box has the full recordings. It tells you which file is missing.
+  \item \textbf{Everything is in volts.} BrainVision stores microvolts, and older TDT blocks (uh3002, uh3003) store whole numbers in µV or mV. The readers convert all of it. Multiply by $10^6$ for µV on a plot.
+  \item \textbf{Old microelectrode channels.} On uh3002 the spike and micro/macro LFP stores were saved as whole millivolts, so they only take a few flat values. We don't use them.
+  \item \textbf{Marker names depend on the rig.} On uh3 stage 2, R15 is the start of each stim pulse and R11 comes 60\,µs later. Other patients use S13/S15 and so on.
+  \item \textbf{BrainVision gaps.} BrainVision writes a NewSegment marker at restarts. Most are not real gaps, but a few per recording are (up to about 0.6\,s). They're in \code{/flags/new_segments} (\code{is_gap} = 1 for real ones); don't filter straight across them.
+  \item \textbf{Saturation.} Some channels hit the amplifier ceiling (about 0.537\,V) for seconds, often when a lead is plugged into another device. It's flagged in \code{/flags/saturation_<stream>}; the data isn't changed.
+  \item \textbf{TDT channel names.} We know ecos channels 1--12 are the ECoG strips, but which inputs are lead 1 vs lead 2 isn't written down anywhere yet, so TDT channels have numbers, not names.
+\end{itemize}
+\end{careful}
+
+% =============================================================================
+\section{What's in the folder}
+
+\begin{tabularx}{\textwidth}{@{}l Y@{}}
+\toprule
+\code{clean_dbs/read_tdt.py}, \code{read_bv.py} & read one raw recording (TDT, BrainVision) \\
+\code{clean_dbs/find_blocks.py} & find every recording under any folder \\
+\code{clean_dbs/check_blocks.py} & table of what's there and what's missing, before cleaning \\
+\code{clean_dbs/clean_block.py} & reads, tags and saves one recording \\
+\code{clean_dbs/save_h5.py} & writes the cleaned \code{.h5} \\
+\code{clean_dbs/flags.py} & saturation, BrainVision gaps, do not use \\
+\code{clean_dbs/channel_map.py} & channel names and impedance checks \\
+\code{clean_dbs/stim_events.py} & the standard stim table, BrainVision clock fix \\
+\code{clean_dbs/datatypes.py} & which streams are lfp, mer, emg, \ldots \\
+\code{clean_dbs/index.py} & table of the cleaned set, \code{find_clean}, quick QC \\
+\code{scripts/clean.py} & cleans a folder (or one Cheaha task) \\
+\code{scripts/make_manifest.py}, \code{clean_slurm.sh} & the Cheaha job \\
+\code{matlab/clean_dbs_load.m} & loads a cleaned file into a MATLAB struct \\
+\code{tests/} & small tests, no recordings needed (\code{python -m pytest tests}) \\
+\code{docs/} & these PDFs \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Recordings and anything made from them never go in this folder or in git. The \code{.gitignore} blocks the usual data files, but double check before you commit.
+
+% =============================================================================
+\section{Words you'll see}
+
+\begin{tabularx}{\textwidth}{@{}>{\bfseries}l Y@{}}
+Terminal & the window where you type commands (Terminal on Mac, PowerShell on Windows, Ctrl+` in VS Code) \\
+venv & a private copy of Python for one project, so its packages don't clash with anything else \\
+TDT block & one folder of TDT files (\code{.tev}, \code{.tsq}, \ldots) for one recording \\
+Stream & a continuous signal, like ECoG/LFP, EMG or audio \\
+Epoc & a list of events with times, like video frames or stim pulses \\
+HDF5 (\code{.h5}) & the cleaned file format; opens in Python (h5py) and MATLAB (\code{h5read}) and lets you read just part of a file \\
+Flag & a note about the data (saturated, gap, disconnected); the data itself is never changed \\
+Cheaha & UAB's computing cluster \\
+SLURM & the scheduler on Cheaha: you hand it a job script and how much memory and time it needs, and it runs the job when computers are free \\
+Job array & the same job submitted many times at once, each copy with its own number, so hundreds of recordings get cleaned in parallel \\
+\end{tabularx}
+
+\end{document}

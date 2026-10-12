@@ -1,0 +1,160 @@
+\input{style}
+\renewcommand{\footname}{clean\_dbs \textperiodcentered\ Cheaha Guide}
+
+\begin{document}
+\doctitle{Cleaning the Whole Inventory on Cheaha}{Running clean\_dbs on UAB's computing cluster}
+
+On a laptop, \code{scripts/clean.py} cleans one recording at a time. A full TDT block takes about 30\,s, uses up to 1.8\,GB of memory and writes about 1.3\,GB, so the whole inventory (about 550 recordings) is several hours and around a terabyte of disk. On Cheaha the same script runs as a \textbf{job array}: many copies run at once, and each copy cleans its own slice of a fixed list of recordings.
+
+\begin{tip}{What SLURM is}
+Cheaha is shared by the whole university, so you don't run programs on it directly. You hand \textbf{SLURM}, the scheduler, a short job script that says what to run and how much memory and time it needs (\code{sbatch}), and SLURM runs it when computers are free. A \textbf{job array} is that script submitted many times at once; each copy (a \textit{task}) gets its own number and cleans its own rows of the list.
+\end{tip}
+
+Everything below runs in a terminal on Cheaha. Anything in \code{<angle brackets>} is a placeholder for your own names. Don't put real patient folder names or paths in the repo or in messages; the manifest and reports list patient IDs, so keep them in the output folder and never commit them.
+
+% =============================================================================
+\section{1. Log in}
+You need a Cheaha account (request one at \url{https://rc.uab.edu}). Log in with your BlazerID, either in the browser at \url{https://rc.uab.edu} (Open OnDemand, then \textit{Clusters} $>$ \textit{Cheaha Shell}), or from a terminal:
+\begin{codebox}
+ssh <BlazerID>@cheaha.rc.uab.edu
+\end{codebox}
+You land on the \textbf{login node}, which everyone shares. Only do small things there (copying code, installing, submitting). The cleaning itself always goes through \code{sbatch}.
+
+% =============================================================================
+\section{2. Get the code and its Python}
+
+\begin{tabularx}{\textwidth}{@{}l l Y@{}}
+\toprule
+\textbf{Where} & \textbf{Path} & \textbf{Good for} \\
+\midrule
+User data & \code{$USER_DATA} & the code, the venv, raw data if there's room \\
+Project & \code{/data/project/<lab>} & shared lab data (the PI requests it) \\
+Scratch & \code{$USER_SCRATCH} & cleaned output while you work. \textbf{Files untouched for 90 days are deleted.} \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Put the code in user data and make the venv the same way as on a laptop. uv installs into your own folder without admin rights:
+\begin{codebox}
+cd $USER_DATA
+git clone <clean_dbs repo url> clean_dbs
+cd clean_dbs
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
+uv venv --python 3.12
+uv pip install -e .
+\end{codebox}
+If uv doesn't work there, use Cheaha's Anaconda module instead:
+\begin{codebox}
+module load Anaconda3
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+\end{codebox}
+Check it works: \code{source .venv/bin/activate}, then \code{python -c "import clean_dbs; print('ok')"}.
+
+% =============================================================================
+\section{3. Copy the recordings from Box}
+Research Computing's way to get data from Box is rclone. Set up a Box remote once:
+\begin{codebox}
+module load rclone
+rclone config
+\end{codebox}
+Make a new remote called \code{box}, pick \textbf{Box} as the type, leave the rest blank, and answer \textbf{n} to \textit{Use auto config?}. It then waits for a token. On your own computer (it needs a browser) run \code{rclone authorize "box"}, sign in with your UAB email, and paste the token it prints back into Cheaha. Check it with \code{rclone lsd box:}.
+
+Then copy the inventory, with a dry run first (it shows what would copy without copying):
+\begin{codebox}
+mkdir -p $USER_DATA/dbs_raw
+rclone copy --dry-run "box:<inventory folder on Box>" $USER_DATA/dbs_raw
+rclone copy --progress "box:<inventory folder on Box>" $USER_DATA/dbs_raw
+\end{codebox}
+\begin{careful}{Use copy, never sync}
+\code{rclone sync} deletes files on the destination to make it match, and that can't be undone. If rclone later says the token expired, run \code{rclone config reconnect box:}.
+\end{careful}
+
+% =============================================================================
+\section{4. Make the manifest}
+The manifest is a fixed list, one row per recording, so every task knows exactly which rows are its own and the list can't change mid-job.
+\begin{codebox}
+cd $USER_DATA/clean_dbs
+source .venv/bin/activate
+mkdir -p $USER_SCRATCH/clean_out
+python scripts/make_manifest.py $USER_DATA/dbs_raw $USER_SCRATCH/clean_out/manifest.csv --chunk 10
+\end{codebox}
+It prints how many recordings it found, how many are missing signal files, and the \code{--array} range to use. \code{--chunk 10} means 10 recordings per task, so about 550 recordings become 55 tasks of roughly 5 minutes each. Add \code{--skip-missing} to leave out recordings without their \code{.tev}/\code{.eeg}; otherwise they fail quickly and show up in the report, so you can see what still needs copying.
+
+% =============================================================================
+\section{5. Submit}
+From the \code{clean_dbs} folder (the job finds \code{.venv} in the folder you submit from), try just task 0 first:
+\begin{codebox}
+mkdir -p logs
+sbatch --array=0-0 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv $USER_SCRATCH/clean_out 10
+\end{codebox}
+When it works, submit the rest with the range \code{make_manifest.py} printed (task 0's recordings get skipped, see Section 8):
+\begin{codebox}
+sbatch --array=0-54 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv $USER_SCRATCH/clean_out 10
+\end{codebox}
+The three things after the script are the manifest, the output folder, and the chunk size.
+\begin{careful}{The chunk has to match}
+Use the same chunk number you gave \code{make_manifest.py}, or the tasks won't line up with the array range. To cap how many tasks run at once, add \texttt{\%}, e.g.\ \texttt{-{}-array=0-54\%20}.
+\end{careful}
+Defaults (top of \code{scripts/clean_slurm.sh}): \code{express} partition (2 hour max), 1 hour per task, 4\,GB memory, 1 CPU. Change any of them when you submit, e.g.\ \code{sbatch --mem=8G --time=02:00:00 ...}.
+
+% =============================================================================
+\section{6. Watch it}
+\begin{codebox}
+squeue -u $USER                                         # waiting (PD) and running (R)
+sacct -j <job id> --format=JobID,State,Elapsed,MaxRSS   # how each task went
+tail logs/clean_dbs_<job id>_<task>.out                 # what one task printed
+\end{codebox}
+
+\begin{tabularx}{\textwidth}{@{}l Y@{}}
+\toprule
+\textbf{sacct says} & \textbf{It means} \\
+\midrule
+COMPLETED & every recording in that task cleaned (or was already done) \\
+FAILED & at least one recording failed; the reason is in the report and the \code{.out} log \\
+OUT\_OF\_MEMORY & needs more \code{--mem} \\
+TIMEOUT & needs more \code{--time} or a smaller chunk \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Each task writes its own report to \code{<out>/_reports/clean_report_<task>.csv} after every recording, so tasks never overwrite each other and a killed task still reports what it finished.
+
+% =============================================================================
+\section{7. Merge the reports}
+\begin{codebox}
+python scripts/clean.py --merge-reports $USER_SCRATCH/clean_out --manifest $USER_SCRATCH/clean_out/manifest.csv
+\end{codebox}
+This combines every task report into \code{<out>/clean_report.csv} in manifest order and prints how many cleaned, skipped and failed. Recordings with no report at all (usually a task killed before its first recording) get listed as \textit{not run}.
+
+% =============================================================================
+\section{8. Rerun what failed}
+Rerunning is safe. A recording whose \code{.h5} already exists is skipped, and the \code{.h5} is only written once the whole file is done (it writes \code{<block>.h5.part} and renames it at the end), so a killed task never leaves a half-written file that looks finished.
+\begin{itemize}
+  \item \textbf{Everything that didn't finish:} submit the same \code{sbatch} command again. Finished recordings are skipped in seconds.
+  \item \textbf{Only some tasks:} give just those numbers, e.g.\ \code{--array=3,17,40}. The task is the report's \code{row} divided by the chunk.
+  \item \textbf{Out of memory or time:} add \code{--mem=8G} or \code{--time=02:00:00}.
+\end{itemize}
+Then merge again. If you change the chunk size, delete \code{<out>/_reports} first so old and new reports don't mix.
+
+% =============================================================================
+\section{9. Keep the results}
+Scratch deletes files after 90 days, so when the cleaned set looks right, copy it somewhere permanent:
+\begin{codebox}
+rclone copy --progress $USER_SCRATCH/clean_out "box:<cleaned folder on Box>"
+\end{codebox}
+
+% =============================================================================
+\section{Running it on a laptop instead}
+The array mode works anywhere, just slower. Run the tasks one after another with \code{--task}:
+\begin{codebox}
+python scripts/clean.py --manifest manifest.csv --task 0 --chunk 10 <out folder>
+\end{codebox}
+The plain \code{python scripts/clean.py <raw folder> <out folder>} still cleans everything in one go.
+
+\vspace{1em}
+{\small\textit{Sources:} UAB Research Computing docs, checked October 2026: hardware and partitions, submitting jobs, storage, rclone, and Anaconda pages at \url{https://docs.rc.uab.edu}. Not yet checked on Cheaha itself: the uv installer, the exact ssh hostname, whether big rclone copies are allowed on the login node, and the time per recording there. Run task 0 alone first and check its \code{Elapsed} and \code{MaxRSS} in \code{sacct}.\par}
+
+\end{document}
