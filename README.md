@@ -14,10 +14,10 @@ Open a terminal inside the `clean_dbs` folder (the outer one, with this README i
 
 ```
 uv venv --python 3.12
-uv pip install tdt numpy mne h5py
+uv pip install -e .
 ```
 
-That makes a private Python for the toolbox in a folder called `.venv`. You only do this once.
+That makes a private Python for the toolbox in a folder called `.venv` and installs the toolbox into it, along with what it needs (tdt, numpy, mne, h5py). The `-e` means edits to the code take effect right away, no reinstall. You only do this once.
 
 Every time you open a new terminal to use the toolbox, switch that Python on first:
 
@@ -26,7 +26,7 @@ Every time you open a new terminal to use the toolbox, switch that Python on fir
 
 ## Reading a recording in Python
 
-Run Python from the outer `clean_dbs` folder, then:
+With the `.venv` switched on, this works from any folder:
 
 ```python
 from clean_dbs.read_tdt import read_tdt
@@ -70,7 +70,6 @@ MATLAB has to know which Python to use. Run this once per MATLAB session, with y
 ```matlab
 pyenv(Version="<path to clean_dbs>/.venv/bin/python", ExecutionMode="OutOfProcess");
 % Windows: Version="<path to clean_dbs>\.venv\Scripts\python.exe"
-P = py.sys.path; P.insert(int32(0), "<path to clean_dbs>");
 ```
 
 Then:

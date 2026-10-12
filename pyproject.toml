@@ -1,0 +1,14 @@
+#lets the toolbox be installed with "uv pip install -e ." so "import clean_dbs" works from any folder, script, or MATLAB
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clean_dbs"
+version = "0.1.0"
+description = "Walker lab toolbox for loading and cleaning intraoperative DBS recordings"
+requires-python = ">=3.10"
+dependencies = ["tdt", "numpy", "mne", "h5py"]
+
+[tool.setuptools]
+packages = ["clean_dbs"]
