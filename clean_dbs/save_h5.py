@@ -20,10 +20,10 @@ def save_h5(result, out_path, source_dir):
       /streams/<name>/data       channels x samples, float32, volts
                                  (MATLAB's h5read flips it: you get samples x channels)
       /streams/<name>/channels   channel numbers
-      /streams/<name>            attributes: fs, start_time, device, units
+      /streams/<name>            attributes: fs, start_time, device, units, type, subtype
       /epocs/<name>/onset, offset, data
       /info                      attributes: whatever the reader put in info
-      /flags                     saturation_<stream>/channel,start,end; new_segments/time; attribute dnu (notes only, data unchanged)
+      /flags                     saturation_<stream>/channel,start,end; new_segments/time,missing,is_gap; attribute dnu (notes only, data unchanged)
       /                          attributes: provenance (source, clean_dbs version, package versions, when)
 
     It writes to <name>.h5.part first and only renames to .h5 once everything is written,
@@ -42,6 +42,8 @@ def save_h5(result, out_path, source_dir):
             g.attrs["start_time"] = float(s["start_time"])
             g.attrs["device"] = str(s.get("device", "unknown")) #which Synapse gizmo / rig recorded it, e.g. ecogdbs, emg, microphone
             g.attrs["units"] = str(s.get("units", "V"))
+            g.attrs["type"] = str(s.get("type", "unknown")) #lfp, mer, emg, audio, stim_monitor (see datatypes.py)
+            g.attrs["subtype"] = str(s.get("subtype", ""))
         f.create_group("epocs")
         for name, e in result["epocs"].items():
             g = f.create_group(f"epocs/{name}")

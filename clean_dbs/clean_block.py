@@ -4,6 +4,7 @@ from clean_dbs.read_bv import read_bv
 from clean_dbs.save_h5 import save_h5
 from clean_dbs.block_info import output_path
 from clean_dbs.flags import make_flags
+from clean_dbs.datatypes import stream_type
 
 def clean_block(block_dir, out_root):
     """
@@ -21,6 +22,8 @@ def clean_block(block_dir, out_root):
         r = read_bv(block_dir)
     else:
         r = read_tdt(block_dir)
+    for s in r["streams"].values(): #tag each stream lfp / mer / emg / audio / stim_monitor, see datatypes.py
+        s["type"], s["subtype"] = stream_type(s["device"])
     r["flags"] = make_flags(r, block_dir) #saturation, new segments, dnu, stored as notes, the data isn't changed
     save_h5(r, out_path, block_dir)
     return out_path

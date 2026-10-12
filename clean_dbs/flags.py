@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 import numpy as np
 
@@ -41,14 +42,50 @@ def make_flags(result, block):
     block: the raw block folder or .vhdr it came from
     Returns: dictionary for result["flags"]:
       saturation_<stream>: channel, start, end of flat-at-the-ceiling stretches
-      new_segments: times of brainvision NewSegment markers (usually a pause/restart, but erp001 has 334 of them
-        some only 23 ms apart, so check what they mean on your rig before treating them as gaps)
+      new_segments (brainvision only): time, missing, is_gap for every NewSegment marker, see new_segment_gaps
       dnu: 1 if the block name says do not use
     """
     flags = {}
     for name, stream in result["streams"].items():
         flags[f"saturation_{name}"] = find_saturation(stream)
-    new_segments = result["epocs"].get("NewSegment", {}).get("onset", np.array([]))
-    flags["new_segments"] = {"time":np.asarray(new_segments, dtype=np.float64)[np.asarray(new_segments) > 0]} #the first NewSegment is just the start
+    if Path(block).suffix.lower() == ".vhdr":
+        flags["new_segments"] = new_segment_gaps(block)
     flags["dnu"] = np.int8("dnu" in Path(block).name.lower()) #Path so it works with Windows backslashes too
     return flags
+
+
+def new_segment_gaps(vhdr_path, min_gap=0.001):
+    """
+    BrainVision writes a NewSegment marker with a wall-clock timestamp. Comparing the clock with the sample count tells
+    whether recording actually stopped there. Checked on the inventory (2026-10-11): most NewSegments are NOT gaps
+    (thousands of few-ms segments in the ERP/stim recordings, clock and samples agree), but a few per recording are
+    real gaps of up to ~0.65 s that MNE silently glues together, so the time axis falls behind the real clock after each.
+    Input:
+    vhdr_path: the .vhdr (its .vmrk is found from the MarkerFile= line)
+    min_gap: missing time (s) needed to count as a real gap; smaller differences are clock jitter
+    Returns: dictionary of arrays, one entry per NewSegment after the first:
+      time (s, on the recording's own time axis), missing (s of clock time with no samples before it), is_gap (1/0)
+    """
+    vhdr_path = Path(vhdr_path)
+    header = vhdr_path.read_text(errors="ignore")
+    marker_file = next((line.split("=", 1)[1].strip() for line in header.splitlines() if line.startswith("MarkerFile=")), vhdr_path.stem + ".vmrk")
+    interval = next((float(line.split("=", 1)[1]) for line in header.splitlines() if line.startswith("SamplingInterval=")), None)
+    empty = {"time":np.array([]), "missing":np.array([]), "is_gap":np.array([], dtype=np.int8)}
+    vmrk = vhdr_path.parent / marker_file
+    if interval is None or not vmrk.is_file():
+        return empty
+    dt = interval / 1e6 #SamplingInterval is in microseconds
+    positions, clocks = [], []
+    for line in vmrk.read_text(errors="ignore").splitlines():
+        if line.startswith("Mk") and "New Segment" in line:
+            fields = line.split("=", 1)[1].split(",")
+            stamp = fields[5].strip() if len(fields) > 5 else ""
+            if len(stamp) >= 20: #YYYYMMDDhhmmss + microseconds
+                positions.append(int(fields[2]))
+                clocks.append(datetime.strptime(stamp[:20], "%Y%m%d%H%M%S%f"))
+    if len(positions) < 2:
+        return empty
+    positions = np.asarray(positions)
+    clock_s = np.array([(c - clocks[0]).total_seconds() for c in clocks])
+    missing = np.diff(clock_s) - np.diff(positions) * dt
+    return {"time":(positions[1:] - 1) * dt, "missing":missing, "is_gap":(missing > min_gap).astype(np.int8)}
