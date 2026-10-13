@@ -1,6 +1,10 @@
 import re
 from pathlib import Path
 from clean_dbs.cohorts import COHORTS, ID_IN_NAME_RE, NUMBER_RE, cohort_of, condition_of
+from clean_dbs import privacy
+
+#a Box number folder on its own (digits and dots, sometimes a short suffix); never written into a source path or report
+NUMBER_FOLDER_RE = re.compile(r"^\d+(\.\d+)*(_[A-Za-z]+)?$")
 
 
 def describe_block(block):
@@ -12,6 +16,7 @@ def describe_block(block):
         every other cohort also gives cohort, session (subfolder path below the ID, lowercase, spaces as _, "" at the ID root),
         parent_id (the outer ID when this ID's folder sits inside another one, else ""), condition and state (see cohorts.condition_of);
         stage is "stageN" there only if a stage folder is in the session, else ""
+    Folder and file names go through <out>/_cases/renames.csv first (see privacy.py), so a name written there never reaches the outputs
     Raises ValueError when no patient can be worked out (no stage folder for uh/UG, or no study ID above it or in its name)
     """
     block = Path(block)
@@ -29,7 +34,8 @@ def describe_block(block):
     #(DLPFC110/Contents of DLPFC110 folder.../DLPFC110/x.vhdr) is the same person, so the outermost copy of the innermost ID starts the session
     people = [canonical_id(folders[i]) for i in ids]
     first = ids[people.index(people[-1])]
-    below = folders[first + 1:]
+    below = tuple(privacy.rename(f, people[-1]) for f in folders[first + 1:])
+    name = privacy.rename(name, people[-1])
     stage = next((f"stage{m.group(1)}" for f in below if (m := re.search(r"stage\s*(\d)", f, re.IGNORECASE))), "")
     cohort = cohort_of(folders[ids[-1]])
     parents = [p for p in people if p != people[-1]]
@@ -59,7 +65,8 @@ def _stage_layout(block, name, fmt):
     match = re.search(r"stage\s*(\d)", block.parent.name, re.IGNORECASE)
     if match is None:
         raise ValueError(f"Can't tell the stage from {block.parent.name!r}, expected a folder like 'stage1 surgery' above {block.name}")
-    return {"patient":block.parent.parent.name, "stage":"stage" + match.group(1), "block":name, "format":fmt}
+    patient = block.parent.parent.name
+    return {"patient":patient, "stage":"stage" + match.group(1), "block":privacy.rename(name, canonical_id(patient)), "format":fmt}
 
 
 def _from_name(block, name, fmt):
@@ -68,6 +75,7 @@ def _from_name(block, name, fmt):
     if match is None:
         raise ValueError(f"No study ID folder above {block.name} and none in its name, can't tell whose recording it is")
     cohort = match.group(1).lower()
+    name = privacy.rename(name, canonical_id(match.group(0)))
     condition, state = condition_of(_without_ids(name, [canonical_id(match.group(0))]), cohort)
     return {"patient":canonical_id(match.group(0)), "stage":"", "block":name, "format":fmt, "cohort":cohort, "session":"",
             "parent_id":"", "condition":condition, "state":state}
@@ -94,13 +102,80 @@ def source_path(block):
     Input:
     block: a tdt block folder or a brainvision .vhdr file
     Returns: the raw path from the outermost study ID down (e.g. "uh3021/stage1 surgery/clinical_dbs1", "PP012/LFP034/lfp1.vhdr"),
-        never the full path on someone's computer; uh/UG (and anything without a study ID folder) keep the last 3 parts as before
+        never the full path on someone's computer; uh/UG keep the last 3 parts as before. Without a study ID folder above it, the path
+        below the Box number folder (at most 3 parts), so a number folder is never in it. Names go through renames.csv like describe_block
     """
     parts = Path(block).parts
+    out, scope = [], ""
+    for i in range(_source_start(parts), len(parts)):
+        if cohort_of(parts[i]):
+            scope = canonical_id(parts[i])
+            out.append(parts[i])
+        elif i == len(parts) - 1 and Path(block).suffix.lower() == ".vhdr":
+            out.append(privacy.rename_file(parts[i], scope or _id_in_name(parts[i])))
+        else:
+            out.append(privacy.rename(parts[i], scope or _id_in_name(parts[i])))
+    return "/".join(out)
+
+
+def _source_start(parts):
+    #where source_path starts: the outermost study ID; uh/UG and recordings with no ID folder: the last 3 parts, but below any number folder
     ids = [i for i, part in enumerate(parts[:-1]) if cohort_of(part)]
-    if not ids or COHORTS[cohort_of(parts[ids[-1]])]["layout"] == "stage":
-        return "/".join(parts[-3:])
-    return "/".join(parts[ids[0]:])
+    if ids and COHORTS[cohort_of(parts[ids[-1]])]["layout"] != "stage":
+        return ids[0]
+    start = max(len(parts) - 3, 0)
+    numbers = [i for i in range(start, len(parts) - 1) if NUMBER_FOLDER_RE.match(parts[i])]
+    return numbers[-1] + 1 if numbers else start
+
+
+def has_study_id(block):
+    """
+    Input: a tdt block folder or a brainvision .vhdr file
+    Returns: True if a study ID is in a folder above it or in its own name (False: MOTIF/x.vhdr, PR/polarity02.vhdr, can't be cleaned)
+    """
+    block = Path(block)
+    return any(cohort_of(part) for part in block.parts[:-1]) or ID_IN_NAME_RE.search(block.name) is not None
+
+
+def _id_in_name(name):
+    match = ID_IN_NAME_RE.search(str(name))
+    return canonical_id(match.group(0)) if match else ""
+
+
+def names_to_check(block):
+    """
+    Every name of this recording that would go into the cleaned set (folders from the study ID down, its own name, the signal and
+    marker files its header names, the stimulator/task files cleaned with it, tdt videos), after renames.csv
+    Input:
+    block: a tdt block folder or a brainvision .vhdr file
+    Returns: list of {"study_id", "kind", "original"} for the names that don't pass privacy.is_clear (empty list = nothing to check)
+    """
+    from clean_dbs.sidecars import find_sidecars #here, not at the top: sidecars isn't needed to describe a block
+    block = Path(block)
+    parts, is_bv = block.parts, block.suffix.lower() == ".vhdr"
+    names, scope = [], ""
+    for i in range(_source_start(parts), len(parts)): #the same parts as source_path
+        if cohort_of(parts[i]):
+            scope = canonical_id(parts[i])
+            continue
+        last = i == len(parts) - 1
+        names.append((scope or _id_in_name(parts[i]), "recording" if last else "folder", block.stem if last and is_bv else parts[i]))
+    scope = scope or _id_in_name(block.name)
+    if is_bv and block.is_file():
+        header = block.read_text(errors="ignore").splitlines()
+        for key in ("DataFile=", "MarkerFile="):
+            name = next((line.split("=", 1)[1].strip() for line in header if line.startswith(key)), "")
+            if name:
+                names.append((scope, "data file", Path(name).stem))
+        names += [(scope, "sidecar", f.stem) for f in find_sidecars(block)]
+    elif block.is_dir():
+        names += [(scope, "video", v.stem) for v in sorted(block.glob("*.avi"))]
+    out, seen = [], set()
+    for study_id, kind, original in names:
+        if (study_id, original.lower()) not in seen and not privacy.is_clear(privacy.rename(original, study_id)):
+            out.append({"study_id":study_id, "kind":kind, "original":original})
+        seen.add((study_id, original.lower()))
+    return out
 
 
 def missing_files(block):

@@ -2,15 +2,16 @@ from pathlib import Path
 from clean_dbs.read_tdt import tdt_windows, WINDOW_MB
 from clean_dbs.read_bv import bv_windows
 from clean_dbs.save_h5 import open_h5, StreamWriter, write_rest, stale_reason
-from clean_dbs.block_info import output_path, describe_block, recording_condition
+from clean_dbs.block_info import output_path, describe_block, recording_condition, source_path
 from clean_dbs.flags import make_flags, Saturation
 from clean_dbs.datatypes import stream_type, event_type
-from clean_dbs.channel_map import channel_table, connected_contacts, leads_implanted
+from clean_dbs.channel_map import channel_table, connected_contacts, leads_implanted, leads_connected
 import pandas as pd
 from clean_dbs.stim_events import stim_events, bv_clock_time
 from clean_dbs.markers import label_bv
 from clean_dbs.coords import contact_coords
 from clean_dbs.cohorts import cohort_of
+from clean_dbs import privacy
 
 def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
     """
@@ -24,6 +25,7 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
     """
     block_dir = Path(block_dir)
     out_root = Path(out_root)
+    privacy.use_out_folder(out_root) #names in <out_root>/_cases/renames.csv are written as their new names everywhere below
     out_path = output_path(block_dir, out_root) #works out patient/stage/name, see block_info.py
     if out_path.exists() and not force and not stale_reason(out_path): #done by this CLEAN_VERSION; broken or older files are cleaned again
         return out_path
@@ -32,12 +34,14 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
     else:
         r, windows = tdt_windows(block_dir, window_mb)
     case_targets = _case_targets(out_root, block_dir) #lead 1 / lead 2 targets for this patient from the OR sheets, and that row's status
-    implanted = leads_implanted(_case_row(out_root, block_dir)) #a lead that never went in is labeled lead<N>_not_implanted
+    case_row = _case_row(out_root, block_dir)
+    implanted = leads_implanted(case_row) #a lead that never went in is labeled lead<N>_not_implanted
+    connected = leads_connected(case_row) #one that went in but was never plugged in is labeled lead<N>_not_connected
     is_bv = block_dir.suffix.lower() == ".vhdr"
     for name, s in r["streams"].items(): #tag each stream lfp / mer / emg / audio / stim_monitor, see datatypes.py (read_bv already typed its streams)
         if "type" not in s:
             s["type"], s["subtype"] = stream_type(s["device"])
-        table = channel_table(block_dir, name, s["device"], len(s["channels"]), *case_targets[:3], implanted=implanted) #what each channel is (see channel_map.py)
+        table = channel_table(block_dir, name, s["device"], len(s["channels"]), *case_targets[:3], implanted=implanted, connected=connected) #what each channel is (see channel_map.py)
         if table is not None:
             s["channel_names"] = table.pop("name")
             for key, values in table.items():
@@ -53,11 +57,13 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
             s["analog_gain"] = 4000.0        #v1.4.6 p183/202): electrode volts = data / analog_gain. Data left as recorded; routing unconfirmed
     #the video stays outside the .h5 (too big, and video tools cant read it from inside); record where it is, Cam1 lines frames up with the data
     videos = sorted(block_dir.glob("*.avi")) if block_dir.is_dir() else []
-    r["info"]["video"] = ";".join("/".join(v.parts[-4:]) for v in videos) #from the study ID down, like source
+    r["info"]["video"] = ";".join(source_path(block_dir) + "/" + privacy.rename_file(v.name) for v in videos) #from the study ID down, like source
     #what the recording is, from the folder and file names (see cohorts.py), so cohorts can be pooled by condition later; blank = names don't say
     r["info"]["condition"], r["info"]["state"] = recording_condition(block_dir)
     r["info"]["case_status"] = case_targets[3] #how far to trust the targets above: match, conflict, sheet_only, unchecked, missing (no row)
     about = describe_block(block_dir)
+    if about["block"] != (block_dir.stem if is_bv else block_dir.name): #renamed in renames.csv; the reader took it from the file name
+        r["info"]["block"] = about["block"]
     for key in ("cohort", "session", "parent_id"): #only other cohorts have these
         if key in about:
             r["info"][key] = about[key]
@@ -76,6 +82,7 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
         if is_bv: #marker codes -> stim / task / marker with their meaning (markers.py), stim table, and the stimulator files next to the recording
             labeled = label_bv(r, block_dir)
             r["stim"], r["sidecars"] = labeled["stim"], labeled["sidecars"]
+            privacy.scrub_result(r) #sidecar file names (in /sidecars, the stim table and marker evidence) as renames.csv says
         else:
             for name, e in r["epocs"].items():
                 e["type"] = event_type(name)

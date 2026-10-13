@@ -11,7 +11,8 @@
 module load rclone 2>/dev/null || true # on cheaha rclone comes from a module (before set -u, module scripts trip over unset variables)
 set -euo pipefail
 
-SRC="box:UAB DBS Data/UAB DBS Raw Data"
+REMOTE="${REMOTE:-box}" # the rclone remote: "box" on cheaha, "Box" on my laptop (REMOTE=Box bash scripts/copy_uhug.sh)
+SRC="$REMOTE:UAB DBS Data/UAB DBS Raw Data"
 DEST="$USER_DATA/dbs_raw"
 mkdir -p "$DEST"
 

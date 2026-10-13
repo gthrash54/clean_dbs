@@ -194,6 +194,7 @@ python scripts/clean.py --merge-reports $USER_SCRATCH/clean_out --manifest $USER
 | `duplicate` | another copy of the same recording (same size) under a different number folder, cleaned once from the copy named in `reason` |
 | `conflict` | same name and place as another copy but a different size; the bigger one is cleaned, check these by hand |
 | `failed` | `reason` says why (paths in it start at the study ID) |
+| `excluded` | never cleaned: no study ID above it or in its name, or a folder or file name that isn't cleared (see "Cleaning the other cohorts") |
 | `not run` | no report for that row |
 
 ## 8. Rerun what failed
@@ -218,6 +219,97 @@ rclone copy --progress $USER_SCRATCH/clean_out "box:<cleaned folder on Box>"
 RC's storage docs don't say whether user or project folders are backed up, so don't count on it until RC says so.
 
 You don't have to move the data to look at it. Analysis can run on Cheaha too (JupyterLab or MATLAB through OnDemand, or `sbatch`).
+
+## Cleaning the other cohorts
+
+Everything above was written for uh/UG. Box has 24 more cohorts (DLPFC, BI, PP, MC, BV, ORBV, BPP, BB, CHR, PT, SEP, PNS, TM, TMSCS, LFP, JOY, ECOG, burst, DYS, sensory, PR, MOTIF, SDC and the BrainVision part of OR; `clean_dbs/cohorts.py` has what each one seems to be). They use the same scripts, with three differences: the raw copy goes to scratch, one cohort at a time; there are no case tables for them, so they run with `--no-cases`; and their folder and file names have to pass a names check first, because some of them have a person's first name in them.
+
+All the cleaned files go into the same out folder as uh/UG (`$USER_SCRATCH/clean_out`), one manifest per cohort next to each other (`manifest.csv` stays uh/UG, then `manifest_dlpfc.csv`, `manifest_bi.csv`, ...). Every patient folder is a study ID, so two cohorts can't write the same file unless a study ID sits inside another cohort's folder (LFP and SEP IDs inside PP or PT folders) and also has a folder of its own. `make_manifest.py` checks the other manifests in the out folder for that: the same recording copied twice is marked `duplicate` and cleaned once, and a different recording that would land on the same file stops it.
+
+### How big it is
+
+The sizes are what `copy_cohorts.sh` would copy, and the recordings and tasks are from a dry run of `make_manifest.py`, both worked out from a listing of Box in October 2026.
+
+| cohort | study IDs | copy (GB) | recordings | tasks at `--chunk 10` |
+|---|---:|---:|---:|---:|
+| bi | 32 | 950 | 851 | 86 |
+| dlpfc | 154 | 325 | 528 | 53 |
+| pp (with the IDs inside it) | 42 | 357 | 187 | 19 |
+| or (BrainVision part only) | 65 | 215 | 29 | 3 |
+| mc | 14 | 151 | 98 | 10 |
+| bv | 4 | 119 | 51 | 6 |
+| bpp | 20 | 59 | 22 | 3 |
+| bb | 31 | 45 | 73 | 8 |
+| orbv | 2 | 39 | 29 | 3 |
+| pt, chr, ecog, lfp, sep, pns, tmscs, joy, burst, tm, sensory, sdc, motif, pr, dys | 2 to 12 each | 1 to 35 each | 1 to 32 each | 1 to 4 each |
+| **all 24** | **about 420** | **about 2,500** | **about 2,090** | **about 220** |
+
+That's about 3.5 times the uh/UG run (574 recordings, 637 GB of signal, 58 tasks of 10). The recordings are about the same size on average, so I'd expect each task to take 1 to 15 minutes and use 230 to 505 MB like the uh/UG ones did, and a whole cohort to finish in well under an hour once its tasks start. On a sample of 43 BrainVision recordings from these cohorts the cleaned files came to half the size of the signal, so the cleaned set should be 1 to 2 TB. Scratch has room for all of it, but the raw copies add up, which is why I do one cohort at a time and delete each raw copy when its cohort is done.
+
+### Order of work, one cohort at a time
+
+I'd start with a small cohort (PNS, 20 recordings) to go around the whole loop once, then go from small to big and do BI last. For each cohort (here DLPFC):
+
+1. **Copy it to scratch.** `scripts/copy_cohorts.sh` works like `copy_uhug.sh`, for any cohort. Try `--list-only` first; it prints how many folders and files it would copy and copies nothing:
+
+    ```
+    cd $USER_DATA/clean_dbs
+    bash scripts/copy_cohorts.sh --list-only dlpfc
+    mkdir -p $USER_DATA/copy_logs
+    sbatch --partition=short --time=12:00:00 --mem=2G --job-name=copy_dlpfc --output=$USER_DATA/copy_logs/%x_%j.out --wrap "bash scripts/copy_cohorts.sh dlpfc"
+    ```
+
+    It copies `<number folder>/<study ID>/` for that cohort's IDs (in any case, `DLPFC045`, `dlpfc045`, `SEP_03`), with any IDs nested inside them, into `$USER_SCRATCH/dbs_raw/dlpfc/`. It only looks inside number folders, never in the folders at the top of Box that are named after patients. Number folders with a short letter suffix after the number count too (49 study IDs are only there); `--plain-only` leaves those out. It also takes recordings sitting straight in a number folder with the cohort's ID in their name (`BPP012.vhdr`), folders named after two study IDs (with the cohort of the first one), and, for MOTIF, PR and burst, the folders with no study ID that belong to them. It leaves out Imaging, Images, DICOM and MRI folders, scan files, documents, photos and videos other than TDT's `.avi`. The lists it makes have the number folders in them, so they stay next to the copy and are never printed, and the log only shows totals. On my laptop the remote is called `Box`, so there it's `REMOTE=Box DEST=<some folder> bash scripts/copy_cohorts.sh --list-only dlpfc`. If a copy job runs out of time, submit it again; it picks up where it stopped. Copy only, never sync.
+
+2. **Check the copy.** `python scripts/check_copy.py $USER_SCRATCH/dbs_raw/dlpfc`. Names it can't clear (below) are printed as `<withheld>`.
+
+3. **Make the manifest.** Same as step 4, with the cohort's raw folder and its own manifest name:
+
+    ```
+    python scripts/make_manifest.py $USER_SCRATCH/dbs_raw/dlpfc $USER_SCRATCH/clean_out/manifest_dlpfc.csv --chunk 10
+    ```
+
+    It can take more than one raw folder (`make_manifest.py <raw 1> <raw 2> <manifest>`), and so can `check_copy.py`. If it stops at the names check, do the privacy step below and run it again. When it works it prints the whole `sbatch` line to use, with `--no-cases` when none of the cohort's IDs are in `_cases/cases.csv`.
+
+4. **Test task 0**, and check its `Elapsed` and `MaxRSS`:
+
+    ```
+    sbatch --array=0-0 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest_dlpfc.csv $USER_SCRATCH/clean_out 10 --no-cases
+    ```
+
+5. **Submit the rest** with the range it printed, e.g. `--array=0-52`.
+
+6. **Merge.** `python scripts/clean.py --merge-reports $USER_SCRATCH/clean_out --manifest $USER_SCRATCH/clean_out/manifest_dlpfc.csv` writes `clean_report_dlpfc.csv` (the report is named after the manifest, so cohorts don't write over each other's).
+
+7. **Move the cleaned set off scratch** (step 9). Copying the whole out folder again only adds what's new, for example `rsync -a $USER_SCRATCH/clean_out/ /data/project/<lab>/clean_out/`.
+
+8. **Delete the raw copy** once the merged report looks right: `rm -rf $USER_SCRATCH/dbs_raw/dlpfc`. Box is the master, so it can always be copied again.
+
+### Recordings that can't be cleaned yet
+
+A recording has to be filed under a study ID (a folder above it, or the ID in its file name) for clean_dbs to know whose it is, and it never guesses. Recordings in the MOTIF, Motif protocol, PR, Reversal_Polarity and BurstPairPulses folders, and in folders named after two study IDs, are in the manifest with `excluded` and the reason, and show up in the report as `excluded`; nothing in them is cleaned until they're filed under one study ID on Box. A few things aren't copied at all: recordings sitting loose in a number folder with no ID in their name, a LOC folder, a number folder inside a number folder, and the DBS and AO folders (their files aren't BrainVision or TDT). The OR folders get copied, but only one of them has BrainVision files; clean_dbs doesn't see the `T###.eeg` files with no `.vhdr` in the rest, so you could leave OR until someone knows what recorded those.
+
+### The privacy step: names in folder and file names
+
+Some folder and file names on Box have a person's first name in them (a recording saved under the patient's name, a subfolder named after someone). Whatever is in a name goes into the cleaned folder and file names, the `source` and `block` in every file's info, the stimulator files stored in `/sidecars`, and the reports. So `make_manifest.py` checks every name that would go into the cleaned set: the folders from the study ID down, the recording's name, the signal and marker files its header names, the stimulator and task files that get stored with it, and TDT videos. Every word in a name has to be one that describes recordings (the list is `WORDS` in `clean_dbs/privacy.py`); numbers, single letters and study IDs are fine. If a name has a word it doesn't know, it stops before writing anything, prints how many names per study ID (never the names), and lists them in `_cases/names_to_check.csv` in the out folder. It errs on the side of stopping: an abbreviation it hasn't seen stops it just like a name does.
+
+To fill it in:
+
+1. Open `$USER_SCRATCH/clean_out/_cases/names_to_check.csv` on Cheaha (not on a shared screen). Each row has the study ID, what kind of name it is (folder, recording, data file, sidecar, video), the name as it is on Box (`original`), and a path to find it (`example`).
+2. If it has a person's name in it, write a new name in `renamed` that says what the recording is, from words in the list, and keep its numbers so recordings stay apart: `rest_2`, `task_axcpt_3`. If you can't tell what it is, use the kind and a number: `record1`, `folder1`, `stimfile1`.
+3. If it isn't a name, just a word the list doesn't have (an abbreviation, a typo, a task name), leave the row out and add the word to `_cases/allowed_words.txt` instead, one word per line. Never add a word that's mostly used as a first name.
+4. Copy the rows you filled in into `_cases/renames.csv` (columns `study_id`, `original`, `renamed`; a blank `study_id` applies to every study). A renamed value has to pass the check itself, and can't have a `/` in it.
+5. Run `make_manifest.py` again. It prints how many renames and allowed words it used.
+
+Renames only change the cleaned names, never Box or the raw copy. `clean.py` reads the same files from the out folder you give it, checks every recording again before cleaning it, and refuses a recording whose output path isn't the one in the manifest, so if `renames.csv` changes after you made the manifest, make it again. To clean the rest of a cohort while someone sorts out the names, add `--exclude-unchecked` to `make_manifest.py`: those recordings are then in the manifest and the report as `excluded`, with their name withheld, and nothing of them is cleaned.
+
+`renames.csv` and `names_to_check.csv` have the original names in them, and the manifests have the raw paths with the Box number folders, so leave those out whenever the cleaned set goes somewhere other people can open (the case tables in `_cases` stay with it, `build_index` needs them):
+
+```
+rclone copy --progress --exclude "_cases/renames.csv" --exclude "_cases/names_to_check.csv" --exclude "manifest*.csv" $USER_SCRATCH/clean_out "box:<cleaned folder on Box>"
+```
+
+The check covers uh/UG as well, and some uh/UG names don't pass it yet, so the next time you make the uh/UG manifest it will stop until those are cleared the same way.
 
 ## Looking at the data in JupyterLab
 

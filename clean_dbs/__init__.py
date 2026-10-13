@@ -11,7 +11,7 @@ from .cohorts import COHORTS, cohort_of, condition_of
 from .flags import make_flags
 from .datatypes import stream_type, event_type, load_type
 from .index import build_index, find_clean, qc_block, qc_report, load_cases
-from .channel_map import channel_names, channel_table, connected_contacts, leads_implanted
+from .channel_map import channel_names, channel_table, connected_contacts, leads_implanted, leads_connected
 from .stim_events import stim_events, bv_clock_time
 from .version import CLEAN_VERSION
 from .bv_channels import channel_types, classify_channel

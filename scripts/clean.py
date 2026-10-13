@@ -6,16 +6,16 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 import pandas as pd
-from clean_dbs import find_all_blocks, clean_block, describe_block, output_path
-from clean_dbs.block_info import find_duplicates, source_path
+from clean_dbs import find_all_blocks, clean_block, describe_block, output_path, privacy
+from clean_dbs.block_info import find_duplicates, source_path, names_to_check, has_study_id
 from clean_dbs.save_h5 import stale_reason, code_version
 
 #three ways to run it:
-#  python scripts/clean.py <raw folder> <out folder>                          cleans everything, one after another
+#  python scripts/clean.py <raw folder> [<raw folder> ...] <out folder>      cleans everything, one after another
 #  python scripts/clean.py --manifest m.csv --task 3 --chunk 10 <out folder>  cleans rows 30-39 of the manifest (one cluster array task)
 #  python scripts/clean.py --merge-reports <out folder> --manifest m.csv       combines the per-task reports into clean_report.csv
 parser = argparse.ArgumentParser(description="Clean DBS recordings into <out>/<patient>/<stage>/<block>.h5 (uh/UG) or <out>/<patient>/<session>/<block>.h5 (other cohorts)")
-parser.add_argument("folders", nargs="*", help="<raw folder> <out folder>, or just <out folder> with --manifest")
+parser.add_argument("folders", nargs="*", help="<raw folder> [<raw folder> ...] <out folder>, or just <out folder> with --manifest")
 parser.add_argument("--manifest", help="csv from scripts/make_manifest.py")
 parser.add_argument("--task", type=int, help="which array task this is, defaults to $SLURM_ARRAY_TASK_ID")
 parser.add_argument("--chunk", type=int, default=1, help="manifest rows per task")
@@ -40,8 +40,9 @@ def manifest_tag(manifest_path):
 
 
 def short_reason(text, block):
-    #error text can hold the full local path (with the Box number folder above the study ID); keep paths from the study ID down, like source
-    block = Path(block)
+    #error text can hold the full local path (with the Box number folder above the study ID); keep paths from the study ID down, like source,
+    #and with the names from renames.csv swapped in
+    text, block = privacy.scrub(text), Path(block)
     depth = len(source_path(block).split("/"))
     for b in {block, block.resolve()}:
         if len(b.parts) > depth:
@@ -51,11 +52,28 @@ def short_reason(text, block):
     return text
 
 
+def report_name(manifest_path):
+    #one merged report per manifest, so cohorts can share an out folder: manifest.csv -> clean_report.csv, manifest_dlpfc.csv -> clean_report_dlpfc.csv
+    stem = Path(manifest_path).stem
+    return "clean_report.csv" if stem == "manifest" else f"clean_report_{stem.removeprefix('manifest_')}.csv"
+
+
+def held_back(block, excluded=""):
+    #why a block isn't cleaned at all ("" = clean it): excluded in the manifest, no study ID, or a name that isn't cleared (privacy.py)
+    if excluded:
+        return excluded
+    if not has_study_id(block):
+        return f"no study ID above it or in its name ({privacy.mask(source_path(block))}), file it under a study ID first"
+    names = names_to_check(block)
+    return f"names not cleared ({len(names)}), see _cases/{privacy.TO_CHECK}" if names else ""
+
+
 if args.merge_reports:
     if not args.manifest:
         parser.error("--merge-reports needs --manifest, the manifest the tasks ran")
     out_folder = Path(args.merge_reports)
     manifest = pd.read_csv(args.manifest, keep_default_na=False)
+    merged = out_folder / report_name(args.manifest)
     tag = manifest_tag(args.manifest)
     every = sorted((out_folder / "_reports").glob("clean_report_*.csv"))
     parts = sorted((p for p in every if p.stem.endswith(f"_{tag}")), key=lambda p: p.stat().st_mtime) #oldest first
@@ -74,13 +92,13 @@ if args.merge_reports:
     if len(report) < n:
         print(f"dropped {n - len(report)} older report row(s) for blocks that were run again")
     #a task killed before its first block (time limit, out of memory) leaves no rows, so list those as "not run"
-    not_run = manifest.drop(index=report["row"], errors="ignore").drop(columns=["path", "missing"], errors="ignore") #no path, so the report has no full paths
+    not_run = manifest.drop(index=report["row"], errors="ignore").drop(columns=["path", "missing", "out"], errors="ignore") #no path, so the report has no full paths
     not_run["row"], not_run["status"], not_run["reason"] = not_run.index, "not run", "no report, check the slurm log for this task"
     report = pd.concat([report, not_run], ignore_index=True).sort_values("row").reset_index(drop=True)
     print(report["status"].value_counts().to_string())
-    report.to_csv(out_folder / "clean_report.csv", index=False)
+    report.to_csv(merged, index=False)
     copy_guide(out_folder)
-    print(f"merged {len(parts)} task reports into {out_folder / 'clean_report.csv'}")
+    print(f"merged {len(parts)} task reports into {merged}")
     sys.exit()
 
 if args.manifest:
@@ -104,18 +122,30 @@ if args.manifest:
     #make_manifest.py already worked out the extra copies; older manifests have no duplicate column, so nothing is skipped
     skipped = {manifest["path"][i]:(manifest["duplicate_of"][i], manifest["duplicate"][i]) for i in rows_to_do
                if "duplicate" in manifest and manifest["duplicate"][i] != ""}
+    excluded = {manifest["path"][i]:manifest["excluded"][i] for i in rows_to_do if "excluded" in manifest and manifest["excluded"][i] != ""}
+    planned = {manifest["path"][i]:manifest["out"][i] for i in rows_to_do if "out" in manifest and manifest["out"][i] != ""}
     #each task writes its own file so parallel tasks never write the same csv at the same time; named after the chunk and manifest
     #so --merge-reports never mixes in reports from another manifest
     report_path = Path(out_folder) / "_reports" / f"clean_report_{task}_chunk{args.chunk}_{manifest_tag(args.manifest)}.csv"
     print(f"task {task}: manifest rows {rows_to_do}")
+    try:
+        privacy.use_out_folder(out_folder) #the same renames make_manifest.py used, so paths match the manifest's out column
+    except ValueError as error:
+        sys.exit(str(error))
 else:
-    if len(args.folders) != 2:
-        parser.error("give <raw folder> <out folder>")
-    raw_folder, out_folder = args.folders
+    if len(args.folders) < 2:
+        parser.error("give <raw folder> [<raw folder> ...] <out folder>")
+    *raw_folders, out_folder = args.folders
     rows_to_do = []
-    blocks = find_all_blocks(raw_folder)
+    try:
+        privacy.use_out_folder(out_folder)
+    except ValueError as error:
+        sys.exit(str(error))
+    blocks = sorted({Path(b).resolve(): b for raw in raw_folders for b in find_all_blocks(raw)}.values())
+    excluded, planned = {block:held_back(block) for block in blocks}, {}
+    excluded = {block:why for block, why in excluded.items() if why}
     #the same recording copied under several number folders would land on one output path, so only one copy is cleaned
-    skipped = {block:(source_path(kept), why) for block, (kept, why) in find_duplicates(blocks).items()}
+    skipped = {block:(source_path(kept), why) for block, (kept, why) in find_duplicates([b for b in blocks if b not in excluded]).items()}
     report_path = Path(out_folder) / "clean_report.csv"
 
 #the targets and case_status in every file come from the case tables, so a missing table would quietly leave them all blank
@@ -124,12 +154,18 @@ if not (Path(out_folder) / "_cases" / "cases.csv").is_file() and not args.no_cas
 
 rows = []
 for n, block in enumerate(blocks):
-    if block in skipped: #listed in the report as duplicate or conflict, with the copy that was cleaned instead
+    held = held_back(block, excluded.get(block, "")) #checked again here, also for manifests made before the name check
+    if held: #never cleaned, and no name in the report that isn't cleared
+        print(f"EXCLUDED {privacy.mask(source_path(block))}: {held}")
+        row = {"block":privacy.WITHHELD if "names" in held else Path(block).stem, "status":"excluded", "reason":held}
+    elif block in skipped: #listed in the report as duplicate or conflict, with the copy that was cleaned instead
         row = describe_block(block)
         row["status"], row["reason"] = skipped[block][1], f"same output as {skipped[block][0]}"
     else:
         try: #one bad block (missing file, corrupt data) shouldnt stop the rest
             out = output_path(block, out_folder)
+            if block in planned and Path(out).relative_to(out_folder).as_posix() != planned[block]:
+                raise ValueError("its output path isn't the one in the manifest (renames.csv changed since?), make the manifest again")
             existed = out.exists() #checked before cleaning so we can tell cleaned / recleaned / skipped
             why = ("--force" if args.force else stale_reason(out)) if existed else ""
             print(clean_block(block, out_folder, force=args.force))
@@ -139,7 +175,7 @@ for n, block in enumerate(blocks):
             row["status"] = "recleaned" if existed and why else "skipped" if existed else "cleaned"
             row["reason"] = why
         except Exception as error:
-            print(f"FAILED {source_path(block)}: {short_reason(str(error), block)}")
+            print(f"FAILED {privacy.mask(source_path(block))}: {short_reason(str(error), block)}")
             try:
                 row = describe_block(block)
             except ValueError: #if the stage folder name was the problem, describe_block fails too, so keep just the name

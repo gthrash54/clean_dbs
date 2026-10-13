@@ -11,4 +11,6 @@
 #   by their header, stricter sidecar matching, per-code matching, ambiguous TTL tables leave condition blank, TTL lists written as rows,
 #   binary MC_Stimulus files listed; headers that repeat a channel name can be read
 #5: inching blocks named without the underscore (uh3002 increment1depth3) get their depth's contact coordinates, not the final ones
-CLEAN_VERSION = 5
+#6: an implanted lead never plugged into the amplifier (cases.csv note "<target> lead never connected", uh3016 GPi) is labeled
+#   lead<N>_not_connected with no target
+CLEAN_VERSION = 6

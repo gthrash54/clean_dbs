@@ -132,10 +132,13 @@ Blocks that are already cleaned get skipped, so adding a new patient is the same
 - `3`: lead contact coordinates per channel (`channel_x/y/z`, `channel_position`, `coord_space`) from `_cases/contacts.csv`; `analog_gain` on TDT MER streams
 - `4`: fixes from a trial run on the other cohorts: better `condition`/`state` from names (a folder counts when the file name says nothing, a study ID in a file name isn't a condition, `impedance_check`, `off_meds`/`on_meds`), the same ID nested inside itself keeps its session; stimulator programs found by their header whatever they're called, stricter sidecar matching and matching per marker code, no condition when two TTL tables disagree, binary MC_Stimulus files listed under `/sidecars`; headers that give two channels the same name can be read
 - `5`: inching blocks named without the underscore (uh3002's `increment1depth3`) get their own depth's contact coordinates instead of the final ones
+- `6`: an implanted lead that was never plugged into the amplifier (uh3016's GPi lead) is labeled `lead<N>_not_connected` with no target, from a cases.csv note "<target> lead never connected"
 
 A TDT `.tev` that was cut short by a stopped copy fails with "cut short" instead of being read (tdt would fill the missing part with zeros without saying anything). `python scripts/check_copy.py "<raw folder>"` lists those, and recordings missing their signal file, before you clean.
 
-Each cohort's layout and what its recordings seem to be (rest, AX-CPT, iTBS, paired pulses, awake/asleep, follow-up visit, ...) is written down in `clean_dbs/cohorts.py`. The `condition` and `state` that `describe_block` gives (and that go in the manifest and the cleaned file's info) come from folder and file names only, so treat them as a first guess. When a study ID folder sits inside another one (like `PP012/CHR003/`), the recording belongs to the inner ID and the outer one is kept as `parent_id`. `clean_report.csv` in the cleaned folder lists every block with its status and the reason: `cleaned`, `skipped` (already done by this version), `recleaned` (there but broken, older, or `--force`), `duplicate`, `conflict`, `failed` (paths in the reason start at the study ID), or `not run` (array jobs only). It's saved after every block, and `clean.py` exits with an error code if any block failed. To run the whole inventory on Cheaha, see `docs/cheaha.md`.
+Each cohort's layout and what its recordings seem to be (rest, AX-CPT, iTBS, paired pulses, awake/asleep, follow-up visit, ...) is written down in `clean_dbs/cohorts.py`. The `condition` and `state` that `describe_block` gives (and that go in the manifest and the cleaned file's info) come from folder and file names only, so treat them as a first guess. When a study ID folder sits inside another one (like `PP012/CHR003/`), the recording belongs to the inner ID and the outer one is kept as `parent_id`. `clean_report.csv` in the cleaned folder lists every block with its status and the reason: `cleaned`, `skipped` (already done by this version), `recleaned` (there but broken, older, or `--force`), `duplicate`, `conflict`, `failed` (paths in the reason start at the study ID), `excluded` (never cleaned: no study ID above it or in its name, or a folder or file name that isn't cleared, see below), or `not run` (array jobs only). It's saved after every block, and `clean.py` exits with an error code if any block failed. To run the whole inventory on Cheaha, see `docs/cheaha.md`.
+
+Some folder and file names on Box have a person's first name in them, and names go into the cleaned folders, file names, the info in every file and the reports. So every name that would go into the cleaned set has to be made of words that describe recordings (`WORDS` in `clean_dbs/privacy.py`), or be renamed in `<cleaned folder>/_cases/renames.csv`, or have its words in `_cases/allowed_words.txt`. `make_manifest.py` stops otherwise and lists what it couldn't clear in `_cases/names_to_check.csv`, and `clean.py` checks every recording again before cleaning it. How to fill those in is in `docs/cheaha.md`, "Cleaning the other cohorts".
 
 To find things across the cleaned set:
 
@@ -177,7 +180,8 @@ They use small made-up files, so no recordings are needed.
 
 - `<patient>/<stage>/<block>.h5` (uh/UG) or `<study ID>/<session>/<name>.h5` (other cohorts): one cleaned recording
 - `_cases/cases.csv`, `_cases/blocks.csv`: patient and recording info from the OR sheets, with the cross-check `status` of every row (needed before cleaning). blocks.csv has a `stage` column, because a few UG blocks have the same name in stage 1 and stage 2
-- `clean_report.csv`: what the last run did with every recording (cleaned, skipped, recleaned, duplicate, conflict, failed, not run)
+- `clean_report.csv`: what the last run did with every recording (cleaned, skipped, recleaned, duplicate, conflict, failed, excluded, not run); with a manifest named `manifest_<cohort>.csv` it's `clean_report_<cohort>.csv`
+- `_cases/renames.csv`, `_cases/allowed_words.txt`, `_cases/names_to_check.csv`: the names check (see above). `renames.csv` and `names_to_check.csv` have the original names in them, so leave them (and the `manifest*.csv` files, which have the raw paths) out when you share the cleaned set
 - `_about/`: the user guide PDF
 
 ## Things that will trip you up
@@ -211,6 +215,7 @@ clean_dbs/
     stim_events.py     the /stim table (one row per pulse) for TDT, and the BrainVision clock fix
     block_info.py      patient, stage/session and output path for a recording, duplicate copies
     cohorts.py         one profile per cohort (layout, project, conditions), study ID patterns
+    privacy.py         keeps names out of the cleaned set: known words, renames.csv, allowed_words.txt
     version.py         CLEAN_VERSION, bump it when the cleaned output changes
     index.py           table of the cleaned set, find_clean, quick QC
 scripts/
@@ -218,6 +223,7 @@ scripts/
     make_manifest.py   fixed list of recordings for Cheaha
     clean_slurm.sh     the Cheaha job
     copy_uhug.sh       copies only the uh/UG study folders from Box to Cheaha
+    copy_cohorts.sh    copies the study folders of any other cohorts from Box to Cheaha's scratch
     check_copy.py      checks a copied raw folder for missing or cut-short signal files
 matlab/
     clean_dbs_load.m   loads a cleaned file into a struct
