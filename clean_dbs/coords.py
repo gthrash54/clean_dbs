@@ -53,7 +53,7 @@ def contact_coords(out_root, study_id, block, groups, contacts, stage=""):
 
 def _lead_positions(out_root, study_id, block, stage):
     #{lead number: "depthN" or "final"} for the leads that were in the brain during this recording
-    m = re.match(r"increment(\d)_depth(\d+)", block)
+    m = re.match(r"increment(\d)_?depth(\d+)", block, re.IGNORECASE) #uh3002 writes increment1depth3, no underscore
     if m: #inching: this lead is at depth N, any earlier lead is already at its final position
         lead, depth = int(m.group(1)), m.group(2)
         return {**{k:"final" for k in range(1, lead)}, lead:f"depth{depth}"}

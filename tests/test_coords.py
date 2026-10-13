@@ -55,3 +55,10 @@ def test_no_tables_or_patient(tmp_path):
     _tables(tmp_path)
     _, _, _, pos, space = contact_coords(tmp_path, "uh0000", "crosstalk", GROUPS, CONTACTS)
     assert space == "" and all(p == "" for p in pos)
+
+
+def test_depth_name_without_underscore():
+    #uh3002 names its inching blocks increment1depth3; they used to fall through to the final position
+    from clean_dbs.coords import _lead_positions
+    assert _lead_positions("unused", "uh3002", "increment1depth3", "stage1") == {1:"depth3"}
+    assert _lead_positions("unused", "uh3002", "Increment2_Depth4", "stage1") == {1:"final", 2:"depth4"}

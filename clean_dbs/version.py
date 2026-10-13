@@ -10,4 +10,5 @@
 #   a name isn't a condition, impedance_check, off/on_meds, typos), same ID nested in itself keeps its session; MC_Stimulus programs found
 #   by their header, stricter sidecar matching, per-code matching, ambiguous TTL tables leave condition blank, TTL lists written as rows,
 #   binary MC_Stimulus files listed; headers that repeat a channel name can be read
-CLEAN_VERSION = 4
+#5: inching blocks named without the underscore (uh3002 increment1depth3) get their depth's contact coordinates, not the final ones
+CLEAN_VERSION = 5
