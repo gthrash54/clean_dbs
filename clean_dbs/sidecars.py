@@ -1,5 +1,6 @@
 import csv
 import re
+import warnings
 from pathlib import Path
 import numpy as np
 
@@ -76,6 +77,14 @@ def mcs_events(mcs):
             value = np.where(rows[:, 1] != 0, rows[:, 1], rows[:, 2])
             table = {"amplitude":value, "width_us":rows[:, 3], "amplitude2":np.zeros(len(rows)), "width2_us":np.zeros(len(rows)),
                      "active":(rows[:, 1:3] != 0).any(axis=1).astype(np.int8)}
+        bad = ~np.isfinite(dur) | (dur < 0)
+        if bad.any(): #a NaN or negative row time (seen in TM002 results_pp.txt) would turn every later onset into NaN
+            first_bad = int(np.argmax(bad))
+            warnings.warn(f"MC_Stimulus channel {ch}: row {first_bad + 1} of {len(dur)} has an unreadable time, only the rows before it are used")
+            dur = dur[:first_bad]
+            table = {k:v[:first_bad] for k, v in table.items()}
+            if first_bad == 0:
+                continue
         table["onset"] = np.concatenate(([0.0], np.cumsum(dur)[:-1]))
         table["duration"] = dur
         out[ch] = table

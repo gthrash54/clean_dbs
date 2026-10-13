@@ -93,3 +93,17 @@ def test_sidecar_lines_up_and_is_saved(tmp_path):
         assert f["streams/lead"].attrs["type"] == "lfp" and f["streams/unknown"].attrs["type"] == "unknown"
         assert f["streams/lead/channel_group"][0].decode() == "lead1"
         assert "impedance_brainvision" not in f["flags"] #no impedance block in this fake header
+
+
+def test_mcs_unreadable_row_time_stops_onsets_instead_of_nan(tmp_path):
+    #TM002 results_pp.txt has NaN times part way down a channel; every onset after it used to become NaN
+    import warnings
+    from clean_dbs.sidecars import read_mcs, mcs_events
+    path = tmp_path / "prog.txt"
+    path.write_text("Multi Channel Systems MC_Stimulus II\nchannels: 1\noutput mode: current\nformat: 3\nchannel: 1\n"
+                    "100 100 -100 100 0 1000 0\n100 100 -100 100 0 NaN 0\n100 100 -100 100 0 1000 0\n")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        ev = mcs_events(read_mcs(path))[1]
+    assert len(ev["onset"]) == 1 and np.isfinite(ev["onset"]).all()
+    assert any("unreadable time" in str(x.message) for x in w)
