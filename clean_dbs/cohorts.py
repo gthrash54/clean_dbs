@@ -81,30 +81,32 @@ def cohort_of(study_id):
 #what was going on in a recording, read from its session folders and file name. first rule that matches wins, so specific before general.
 #digits are kept as is, the patterns allow for them
 CONDITIONS = [
+    (r"imped[ae]nce", "impedance_check"), #impedance tests sit in task folders (DLPFC Task data/AXCPT/ieeg/impedencecheck), they aren't the task
     (r"axcpt", "task_axcpt"),
     (r"simon", "task_simon"),
     (r"motif", "task_motif"),
     (r"prac(tice)?", "task_practice"),
-    (r"(?<![a-z])task", "task"),
+    (r"joystick", "task_joystick"),
+    (r"(?<![a-z])(?<!no[ _])task", "task"), #"itbs no task" is not a task, same as "itbs_notask"
     (r"itbs", "stim_itbs"),
     (r"burst", "stim_burst"),
     (r"pairedpulse|(?<![a-z])b?pp(?![a-z])", "stim_paired_pulse"),
     (r"ramp", "stim_ramp"),
     (r"sdcurve|sdc(?![a-z])", "stim_sd_curve"),
     (r"erp", "stim_erp"),
-    (r"mep ?threshold", "stim_mep_threshold"),
+    (r"mep ?thres?hold", "stim_mep_threshold"), #"MEPthrehold" is written on Box too
     (r"probing", "stim_probing"),
     (r"polarity|reversal", "stim_polarity_reversal"),
     (r"\d[+-]\d?[+-]", "stim_bipolar_config"),
     #programming-style recordings: named settings, contact configurations, or a frequency/amplitude in the name (BI "1_c_130hz_3ma")
-    (r"arie|home_?settings|home_?pseudo|capsular|monopolar|pseudo|multipolar|mono|ther(apeutic)?(?![a-z])|window|\d ?hz|\d ?ma(?![a-z])", "stim_setting"),
+    (r"arie|home_?settings|home_?pseudo|capsular|monopolar|pseudo|psuedo|multipolar|mono|ther(apeutic)?(?![a-z])|window|\d ?hz|\d ?ma(?![a-z])", "stim_setting"),
     (r"sensory|(?<![a-z])sep", "sensory"),
     (r"lesion", "lesion"),
     (r"buzz", "buzz"),
     (r"mer(?![a-z])|mer_", "mer"),
     (r"nostim", "rest"),
-    (r"contact", "contact"),
-    (r"stim|(?<![a-z])dbs\d", "stim"),
+    (r"co[mn]tact", "contact"), #"comtact1" (BI032) is a typo for contact1
+    (r"(?<!pre)stim|(?<![a-z])dbs\d", "stim"), #"restingstateprestimulation" is rest before stim, not stim
     (r"eyes ?open", "rest_eyes_open"),
     (r"eyes ?closed", "rest_eyes_closed"),
     (r"rest|baseline", "rest"),
@@ -117,7 +119,9 @@ STATES = [
     (r"awake", "awake"),
     (r"pre_?dbs", "pre_dbs"),
     (r"post_?dbs", "post_dbs"),
-    (r"preop", "preop"),
+    (r"pre_?op(?!en)", "preop"), #not "impedencetest_preopening" (before opening, intraop)
+    (r"off_?meds", "off_meds"),
+    (r"(?<![a-z])on_?meds", "on_meds"),
     (r"intraop", "intraop"),
     (r"(\d+) ?months?", "followup_{0}mo"),
 ]
@@ -137,10 +141,11 @@ def condition_of(text, cohort=""):
     """
     text = str(text).lower().replace("\\", "/")
     folders, _, name = text.rpartition("/")
-    #the file name usually says the most; a folder only wins when the name is blank or generic (task1 inside task data/axcpt/)
-    condition = _match(name)
-    if condition in GENERIC and _match(folders) not in GENERIC:
-        condition = _match(folders)
+    #the file name usually says the most; a folder only wins when the name is blank or generic (task1 inside task data/axcpt/,
+    #Bicep inside Initial Peripheral Stim/)
+    condition, from_folders = _match(name), _match(folders)
+    if (condition == "" and from_folders) or (condition in GENERIC and from_folders not in GENERIC):
+        condition = from_folders
     if condition == "task" and cohort in COHORT_TASK:
         condition = COHORT_TASK[cohort]
     states = []

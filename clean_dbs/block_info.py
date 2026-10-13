@@ -25,14 +25,23 @@ def describe_block(block):
     #uh/UG keep the original stage layout and output path, so cleaned sets made before cohorts existed still line up
     if not ids or COHORTS[cohort_of(folders[ids[-1]])]["layout"] == "stage":
         return _stage_layout(block, name, fmt)
-    #innermost ID wins, so LFP03/CHR003/x.vhdr belongs to CHR003, with LFP03 kept as parent_id
-    below = folders[ids[-1] + 1:]
+    #innermost ID wins, so LFP03/CHR003/x.vhdr belongs to CHR003, with LFP03 kept as parent_id. The same ID again further down
+    #(DLPFC110/Contents of DLPFC110 folder.../DLPFC110/x.vhdr) is the same person, so the outermost copy of the innermost ID starts the session
+    people = [canonical_id(folders[i]) for i in ids]
+    first = ids[people.index(people[-1])]
+    below = folders[first + 1:]
     stage = next((f"stage{m.group(1)}" for f in below if (m := re.search(r"stage\s*(\d)", f, re.IGNORECASE))), "")
     cohort = cohort_of(folders[ids[-1]])
-    condition, state = condition_of("/".join(below + (name,)), cohort)
-    return {"patient":canonical_id(folders[ids[-1]]), "stage":stage, "block":name, "format":fmt, "cohort":cohort,
+    parents = [p for p in people if p != people[-1]]
+    condition, state = condition_of(_without_ids("/".join(below + (name,)), people), cohort)
+    return {"patient":people[-1], "stage":stage, "block":name, "format":fmt, "cohort":cohort,
             "session":"/".join(f.strip().lower().replace(" ", "_") for f in below),
-            "parent_id":canonical_id(folders[ids[-2]]) if len(ids) > 1 else "", "condition":condition, "state":state}
+            "parent_id":parents[-1] if parents else "", "condition":condition, "state":state}
+
+
+def _without_ids(text, people):
+    #a study ID in a folder or file name (BPP032.vhdr, LFP/BI020.vhdr) names the person, not what was recorded, so "BPP" isn't read as paired pulses
+    return ID_IN_NAME_RE.sub(lambda m: "" if canonical_id(m.group(0)) in people else m.group(0), text)
 
 
 def canonical_id(name):
@@ -59,7 +68,7 @@ def _from_name(block, name, fmt):
     if match is None:
         raise ValueError(f"No study ID folder above {block.name} and none in its name, can't tell whose recording it is")
     cohort = match.group(1).lower()
-    condition, state = condition_of(name, cohort)
+    condition, state = condition_of(_without_ids(name, [canonical_id(match.group(0))]), cohort)
     return {"patient":canonical_id(match.group(0)), "stage":"", "block":name, "format":fmt, "cohort":cohort, "session":"",
             "parent_id":"", "condition":condition, "state":state}
 

@@ -1,10 +1,11 @@
 import re
+import tempfile
 from datetime import datetime
 import numpy as np
 import mne
 from pathlib import Path
 from clean_dbs.read_tdt import WINDOW_MB
-from clean_dbs.bv_channels import channel_types, cohort_of, VOLT_UNITS
+from clean_dbs.bv_channels import channel_types, cohort_of, read_vhdr_channels, VOLT_UNITS
 
 #units MNE scales to SI on its own (it divides by 1e6 for uS etc); any unit not here (BIP, %, ...) comes through as the raw number
 MNE_SI_UNITS = {"µS":"S", "uS":"S", "S":"S", "C":"C", "°C":"C", "N":"N", "ARU":"ARU", "n/a":"n/a"}
@@ -83,10 +84,35 @@ def _open(vhdr_path, t1, t2):
         raise FileNotFoundError(f"Signal file {data_file} is missing next to {vhdr_path}; only the header was copied, get the full recording from Box")
     if t1 < 0 or (t2 != 0 and t2 <= t1):
         raise ValueError(f"Bad time window t1={t1}, t2={t2}: need t1 >= 0 and t2 = 0 (to the end) or t2 > t1")
-    raw = mne.io.read_raw_brainvision(vhdr_path, preload=False, verbose="error") #verbose="error" hides MNE's progress messages
+    raw = _read_raw(vhdr_path, header)
     if t1 >= raw.times[-1]:
         raise ValueError(f"t1={t1} is past the end of the recording ({raw.times[-1]:.1f} s)")
     return raw, header
+
+
+def _read_raw(vhdr_path, header):
+    """
+    Opens the recording with MNE (samples stay on disk). A header that gives two channels the same name (BI002 12 Month Baseline has
+    LFP1 on Ch20 and Ch25) makes MNE fail ("Channel LFP1-0 has no associated original unit"), so MNE gets a copy of the header with
+    the repeats renamed, in a temporary folder, pointing at the real .eeg and .vmrk. Only MNE sees those names: the labels in the
+    cleaned file come from the original header by channel position (bv_channels.channel_types).
+    """
+    names = [n.strip() for n, _ in read_vhdr_channels(vhdr_path)]
+    if len(set(names)) == len(names):
+        return mne.io.read_raw_brainvision(vhdr_path, preload=False, verbose="error") #verbose="error" hides MNE's progress messages
+    text = vhdr_path.read_bytes().decode("utf-8", "surrogateescape") #keeps any byte as it was, whatever the codepage
+    seen = {}
+    def rename(m):
+        name = m.group(2).split(",")[0]
+        seen[name.strip()] = seen.get(name.strip(), 0) + 1
+        return m.group(0) if seen[name.strip()] == 1 else f"{m.group(1)}{name.strip()}_dup{seen[name.strip()]}{m.group(2)[len(name):]}"
+    text = re.sub(r"^(Ch\d+=)([^\r\n]*)", rename, text, flags=re.M)
+    for key in ("DataFile", "MarkerFile"): #full paths, so the copy finds the files next to the real header
+        text = re.sub(rf"^({key}=)([^\r\n]*)", lambda m: m.group(1) + str(vhdr_path.parent.resolve() / m.group(2).strip()), text, flags=re.M)
+    with tempfile.TemporaryDirectory() as folder:
+        copy = Path(folder) / vhdr_path.name
+        copy.write_bytes(text.encode("utf-8", "surrogateescape"))
+        return mne.io.read_raw_brainvision(copy, preload=False, verbose="error") #the header and markers are read here, the .eeg later
 
 
 def _result(raw, vhdr_path, header, t1, t2, split):

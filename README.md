@@ -129,6 +129,8 @@ Blocks that are already cleaned get skipped, so adding a new patient is the same
 
 - `1`: first numbered version (truncated `.tev` check, Chicago start time, stream-based duration, `case_status`, saturation at the rail)
 - `2`: BrainVision split into typed streams with per-channel labels, marker meanings and stim from `markers.py`, `/sidecars`; a `rail` on every stream (BrainVision actiCHamp too); BrainVision start time straight from the `.vmrk`; `cohort` in every file's info; `CnA_` typed as a setting, `PerB` read as voice B pulses, uneven TDT epocs fixed (`epoc_warning`); `lead<N>_not_implanted` and stage 2 strip labels
+- `3`: lead contact coordinates per channel (`channel_x/y/z`, `channel_position`, `coord_space`) from `_cases/contacts.csv`; `analog_gain` on TDT MER streams
+- `4`: fixes from a trial run on the other cohorts: better `condition`/`state` from names (a folder counts when the file name says nothing, a study ID in a file name isn't a condition, `impedance_check`, `off_meds`/`on_meds`), the same ID nested inside itself keeps its session; stimulator programs found by their header whatever they're called, stricter sidecar matching and matching per marker code, no condition when two TTL tables disagree, binary MC_Stimulus files listed under `/sidecars`; headers that give two channels the same name can be read
 
 A TDT `.tev` that was cut short by a stopped copy fails with "cut short" instead of being read (tdt would fill the missing part with zeros without saying anything). `python scripts/check_copy.py "<raw folder>"` lists those, and recordings missing their signal file, before you clean.
 

@@ -6,4 +6,8 @@
 #   and /sidecars; stream rail attribute (brainvision actiCHamp too); brainvision start as the vmrk clock; cohort in info for every file;
 #   CnA_ typed stim_params, PerB = voice B pulses, uneven tdt epocs trimmed (info epoc_warning); lead<N>_not_implanted and stage 2 labels
 #3: lead contact coordinates per channel (channel_x/y/z/position, coord_space) from _cases/contacts.csv; analog_gain on tdt mer streams
-CLEAN_VERSION = 3
+#4: other cohorts, from a trial run on real recordings: condition/state rules (folder label when the name says nothing, the study ID in
+#   a name isn't a condition, impedance_check, off/on_meds, typos), same ID nested in itself keeps its session; MC_Stimulus programs found
+#   by their header, stricter sidecar matching, per-code matching, ambiguous TTL tables leave condition blank, TTL lists written as rows,
+#   binary MC_Stimulus files listed; headers that repeat a channel name can be read
+CLEAN_VERSION = 4

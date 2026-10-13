@@ -92,7 +92,8 @@ def read_ttl_txt(path):
     """
     text = Path(path).read_text(errors="ignore")
     cells = [(m.group(1), re.findall(r"'([^']*)'", m.group(2))) for m in re.finditer(r"^\s*(\w+)\s*=\s*\{(.*?)\}\s*;?", text, re.M | re.S)]
-    nums = [(m.group(1), [float(x) for x in m.group(2).replace(",", " ").split()]) for m in re.finditer(r"^\s*(\w+)\s*=\s*\[([^\]]*)\]\s*;?", text, re.M)]
+    #a list written as rows (BI016 STIM/TTL.txt: "pulesp_ms=[0.2 0.4 ; 1.2 1.4 ; ...]") has ";" between rows, read it as one list
+    nums = [(m.group(1), [float(x) for x in m.group(2).replace(",", " ").replace(";", " ").split()]) for m in re.finditer(r"^\s*(\w+)\s*=\s*\[([^\]]*)\]\s*;?", text, re.M)]
     words = {m.group(1):m.group(2).strip() for m in re.finditer(r"^\s*(\w+)\s*=\s*([A-Za-z]\w*)\s*;?\s*$", text, re.M)}
     cond, ttl, src, used = [], [], [], set()
     order = sorted([(text.find(n + "="), "cell", n, v) for n, v in cells] + [(text.find(n + "="), "num", n, v) for n, v in nums])
@@ -203,7 +204,7 @@ def read_sidecar(path):
     """
     Reads any sidecar this module knows.
     Input: path
-    Returns: (kind, table) where kind is mcs, ttl_txt, stim_struct, protocol_csv, ttl_code_csv, channels_csv, eprime or None;
+    Returns: (kind, table) where kind is mcs, mcs_binary (found, can't be read), ttl_txt, stim_struct, protocol_csv, ttl_code_csv, channels_csv, eprime or None;
              table is a dictionary of equal-length arrays (for mcs: the stimulation channel's rows, see mcs_table)
     """
     path = Path(path)
@@ -225,6 +226,8 @@ def read_sidecar(path):
         if head.startswith(MCS_HEADER.encode()):
             mcs = read_mcs(path)
             return "mcs", mcs_table(mcs)
+        if b"MC_Stimulus" in head[:40]: #MC_Stimulus's own binary save (MC012 results.txt), not the ASCII export: listed, not read
+            return "mcs_binary", {"note":np.array(["binary MC_Stimulus II file, not the ASCII export; open it in MC_Stimulus and export it as ASCII to read it"], dtype=object)}
         if b"\xff\xfe" == head[:2] or b"LogFrame" in path.read_bytes()[:4000]:
             t = read_eprime(path)
             return ("eprime", t) if t else (None, None)
@@ -284,7 +287,8 @@ def match_times(markers, events, tol=MATCH_TOL_S):
     events (a recording stopped early, or started after the program) don't break it.
     Input: markers (s, recording clock, use the gap-corrected clock for brainvision), events (s, sidecar clock), tol (s) allowed error
     Returns: dictionary: matched (1/0), pairs (n x 2 int array: marker index, event index), n_markers, n_events, n_pairs, max_err_ms
-             matched = 1 when at least 90% of the markers inside the matched stretch pair up and there are 3 or more pairs
+             matched = 1 when at least 90% of the markers inside the matched stretch pair up, there are 3 or more pairs, and the pairs
+             cover at least half of the shorter of the two lists
     """
     m, e = np.asarray(markers, float), np.asarray(events, float)
     empty = {"matched":0, "pairs":np.zeros((0, 2), dtype=np.int64), "n_markers":len(m), "n_events":len(e), "n_pairs":0, "max_err_ms":np.nan}
@@ -309,7 +313,10 @@ def match_times(markers, events, tol=MATCH_TOL_S):
                     break
             if len(pairs) > best["n_pairs"]:
                 span = pairs[-1][0] - pairs[0][0] + 1
-                best = {"matched":int(len(pairs) >= 3 and len(pairs) >= 0.9 * span), "pairs":np.array(pairs, dtype=np.int64),
+                #and the pairs have to cover at least half of the shorter list: a few chance pairs out of thousands (TM001 pp: 4 of 5165
+                #markers) aren't a match
+                enough = len(pairs) >= 0.5 * min(len(m), len(e))
+                best = {"matched":int(len(pairs) >= 3 and len(pairs) >= 0.9 * span and enough), "pairs":np.array(pairs, dtype=np.int64),
                         "n_markers":len(m), "n_events":len(e), "n_pairs":len(pairs), "max_err_ms":float(max(err, default=0) * 1e3)}
         if best["matched"] and best["n_pairs"] >= 0.9 * len(m):
             break
@@ -318,6 +325,14 @@ def match_times(markers, events, tol=MATCH_TOL_S):
 
 #names that are sidecars, checked on the Box survey; anything else next to a recording is left alone
 SIDECAR_PATTERN = re.compile(r"(ttl|results|stim|protocol|stimuli_ordered|_events|_channels|struct|buzz|ramp|pns|reversal|^mc\d+|go_?nogo|axcpt|simon|reach|choice|exp\d|prac\d)", re.I)
+
+
+def _is_mcs(path):
+    #an MC_Stimulus program says so on its first line, whatever it's called (CHR "0-1_80us_M.txt", PT "pulse_directionality_ch1.txt")
+    if path.suffix.lower() not in (".txt", ".dat"):
+        return False
+    with open(path, "rb") as f:
+        return f.read(len(MCS_HEADER)) == MCS_HEADER.encode()
 
 
 def find_sidecars(vhdr):
@@ -332,8 +347,8 @@ def find_sidecars(vhdr):
     out = []
     for d in dict.fromkeys(folders):
         for f in sorted(d.iterdir()):
-            if (f.is_file() and f.suffix.lower() in (".txt", ".dat", ".csv", ".mat") and SIDECAR_PATTERN.search(f.stem)
-                    and f.stat().st_size < 50_000_000):
+            if (f.is_file() and f.suffix.lower() in (".txt", ".dat", ".csv", ".mat") and f.stat().st_size < 50_000_000
+                    and (SIDECAR_PATTERN.search(f.stem) or _is_mcs(f))):
                 out.append(f)
     stem = vhdr.stem.lower()
     return sorted(out, key=lambda f: not f.stem.lower().startswith(stem)) #stable: named-after-the-recording first, then folder order
@@ -366,6 +381,14 @@ def attach_sidecars(stim, vhdr):
         t = event_times(kind, table) if kind in ("mcs", "protocol_csv") else None
         if t is not None and n >= 3:
             entry["match"] = match_times(times, t)
+            if not entry["match"]["matched"] and "source" in stim: #a program can follow one code only (TM002 Burst1: 200 S15 burst onsets
+                for code in dict.fromkeys(np.asarray(stim["source"])): #among 3,300 S14 pulses), so try each stim code on its own too
+                    rows = np.flatnonzero(np.asarray(stim["source"]) == code)
+                    m = match_times(times[rows], t) if len(rows) >= 3 else {"matched":0}
+                    if m["matched"]:
+                        m["pairs"] = np.column_stack((rows[m["pairs"][:, 0]], m["pairs"][:, 1]))
+                        entry["match"] = dict(m, source=str(code))
+                        break
             if entry["match"]["matched"]:
                 entry["matched"] = 1
                 if kind not in copied: #the first match of each kind fills the stim table (the file named after the recording wins); later ones are only marked matched
@@ -374,6 +397,7 @@ def attach_sidecars(stim, vhdr):
         out[_key(f, out)] = entry
     #ttl tables: turn the ttl width measured from the markers into the condition it codes
     lag = np.asarray(stim.get("marker_lag_ms", np.full(n, np.nan)), dtype=np.float64)
+    decodes = {}
     for key, entry in out.items():
         if entry["kind"] in ("ttl_txt", "stim_struct") and n and np.isfinite(lag).any():
             ttl = entry["table"]["ttl_ms"] if entry["kind"] == "ttl_txt" else entry["table"].get("TTL")
@@ -387,11 +411,30 @@ def attach_sidecars(stim, vhdr):
             hit = np.abs(lag[:, None] - np.asarray(ttl, float)[None, :]) <= 0.025 #ttl widths step 0.1 ms or more; amplifier resolves 0.01-0.04 ms
             one = hit.sum(axis=1) == 1
             if one.sum() >= 0.9 * np.isfinite(lag).sum() and one.any():
-                cond = np.asarray(stim.get("condition", np.full(n, "", dtype=object)), dtype=object)
-                cond[one] = np.where(cond[one] == "", names[hit[one].argmax(axis=1)], cond[one])
-                stim["condition"] = cond
-                entry["matched"] = 1
+                decoded = np.full(n, "", dtype=object)
+                decoded[one] = names[hit[one].argmax(axis=1)]
+                decodes[key] = decoded
                 entry["match"] = {"matched":1, "n_markers":int(np.isfinite(lag).sum()), "n_events":len(ttl), "coded":int(one.sum())}
+    #several TTL tables can decode the same widths (CHR001 has one per program, all 0.1 ms steps); if they name the same pulse
+    #differently we can't tell which program ran, so no condition is filled in from any of them (never guess)
+    differ = len({tuple(d) for d in decodes.values()}) > 1
+    if differ: #...unless one of them was written with the program that lined up with the markers (0-1_80us_M.txt + 0-1_80us_M_TTL.txt)
+        programs = {Path(e["file"]).stem.lower() for e in out.values() if e["kind"] == "mcs" and e["matched"]}
+        paired = [k for k in decodes if re.sub(r"[_ -]?ttl$", "", Path(out[k]["file"]).stem, flags=re.I).lower() in programs]
+        if len(paired) == 1:
+            for k in decodes:
+                if k != paired[0]:
+                    out[k]["match"].update(matched=0, ambiguous=1)
+            decodes, differ = {paired[0]:decodes[paired[0]]}, False
+            out[paired[0]]["match"]["chosen_by"] = "named after the stimulator program that matched the markers"
+    for key, decoded in decodes.items():
+        if differ:
+            out[key]["match"].update(matched=0, ambiguous=1)
+            continue
+        cond = np.asarray(stim.get("condition", np.full(n, "", dtype=object)), dtype=object)
+        cond = np.where(cond == "", decoded, cond)
+        stim["condition"] = cond
+        out[key]["matched"] = 1
     return out
 
 

@@ -162,7 +162,8 @@ def label_bv(result, vhdr, cohort=None):
         mine = np.flatnonzero(ed["key"] == key)
         rises = mine[ed["rise"][mine] == 1]
         if len(rises) < 0.5 * len(mine): #mostly falling edges: the end of another code's TTL
-            before = ed["key"][mine[0] - 1] if mine[0] > 0 else ""
+            same_port = np.flatnonzero(ed["port"][:mine[0]] == ed["port"][mine[0]]) #the S and R ports are separate lines
+            before = ed["key"][same_port[-1]] if len(same_port) else ""
             e.update(type="marker", meaning="ttl_end", kind="end", evidence=f"falling edge: the TTL raised by {before} goes low here (kept as a marker, never a pulse)")
             continue
         kind = classify_code(ed["width_ms"][rises], ed["time"][rises])
@@ -198,6 +199,26 @@ def label_bv(result, vhdr, cohort=None):
                 e["type"], e["meaning"] = "stim", "stim_pulse_start" if e["kind"] == "single" else "stim_trial_start"
                 confirmed[key] = 1
             break
+    #2b) a code can carry only some of a program's sync outputs (DLPFC047 itbs: 40 S15 among 1,103 S7), too few to line up on their own;
+    #it's stim when the program lines up with it and the stim codes together, and nearly all of its own rises pair up
+    stim_keys = [k for k, e in epocs.items() if e.get("type") == "stim"]
+    for key, e in epocs.items():
+        if not stim_keys or e.get("type") not in ("marker", "task") or e.get("kind") not in ("single", "long", "ttl_code", "fixed_ttl"):
+            continue
+        rises = ed["rise"] == 1
+        union = rises & np.isin(ed["key"], stim_keys + [key])
+        mine = (ed["key"][union] == key)
+        for name, (kind, table) in files.items():
+            if "buzz" in name.lower() or not (kind == "protocol_csv" or np.nanmax(np.abs(table["amplitude"]), initial=0) > 0):
+                continue
+            m = sc.match_times(clock(ed["time"][union]), sc.event_times(kind, table))
+            paired = int(mine[m["pairs"][:, 0]].sum()) if m["matched"] else 0
+            if paired >= 3 and paired >= 0.9 * mine.sum():
+                e["evidence"] = (f"{e['evidence']}; together with {', '.join(stim_keys)} its times match {name} ({paired} of its {int(mine.sum())} rises, "
+                                 f"max error {m['max_err_ms']:.3f} ms)")
+                e["type"], e["meaning"] = "stim", "stim_pulse_start" if e["kind"] == "single" else "stim_trial_start"
+                confirmed[key] = 1
+                break
     #3) stim table from the rising edges of stim codes
     rows = []
     for key, e in epocs.items():

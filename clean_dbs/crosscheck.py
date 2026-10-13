@@ -18,6 +18,7 @@ from .read_tdt import _events
 #  block exists: a tdt folder or .vhdr with that name under the data root, or on Box (uh3020/uh3024 aren't staged locally)
 #  leads_in_place: impedance checks (PZ5 csvs / .vhdr) say which 8-channel lead groups were plugged in, counted up through the surgery
 #  stim_contacts: in the noSwitch experiments the stimulated contact is unplugged from the PZ5, so its channel goes flat during stim
+#    (not in the old uh3_1dbs_directional setup, where a switch routes the stim: those blocks are sheet_only, see switched)
 #  target: the lead that was stimulated, lead 1 = cases.csv target1, lead 2 = target2
 #every check gives match / conflict / sheet_only (nothing in the data to check it with) / no_data (recording not found)
 
@@ -43,6 +44,12 @@ MIN_CONNECTED = 4 #a lead group counts as plugged in when at least 4 of its 8 co
 LEVEL_RATIO = {(2, 3, 4):0.35, (5, 6, 7):0.3}
 GANG_RATIO, FLAT_RATIO, RING_RATIO, RING_MAX_RATIO = 0.4, 0.1, 1.25, 0.05
 MIN_ARTIFACT_UV = 2000
+#a ring unplugged on its own (contact 8 on the GPe in the uh3005 sedation runs, contact 1 in the uh3008 "1-2-3-4" run), see _lone_rings:
+#  under 0.4 of its neighboring level (unplugged 0.12-0.25; a plugged ring far from the stim reads down to 0.15, so this alone isn't enough)
+#  and within 0.8-1.25x of a contact that's off the amp on the other lead (unplugged 0.86-0.93x), or under 0.3x its own ratio in the
+#  block's other windows (unplugged 0.12 vs 0.97). Checked on the 2026-10-12 cache (526 blocks): only those 4 blocks have a candidate at all
+RING_ALONE_RATIO, TWIN_RANGE, RING_DROP = 0.4, (0.8, 1.25), 0.3
+MAX_UV = 1e6 #lead std over 1 V = mis-scaled or railed store, see _readable
 WINDOW_S = 0.5 #seconds read per stim window
 MAX_WINDOWS = 6 #stim windows read per block, spread over its trains (each is a slow random read of the .tev on Box)
 BOX_PAUSE_S = 0.3 #pause between reads on Box
@@ -351,15 +358,69 @@ def data_contacts(ev):
       None if no stim windows could be read
     """
     windows = [w for w in ev.get("trains", []) if "std" in w]
-    if not ev.get("stim_read") or not windows:
+    if not ev.get("stim_read") or not windows or switched(ev):
         return None
-    contacts, order = set(), []
+    #per window: {lead: (std, flat contacts)}, starting from the rules in flat_contacts; railed or mis-scaled leads are left out
+    per = []
     for w in sorted(windows, key=lambda w: w["time"]):
-        now = {(int(l), c) for l, std in w["std"].items() for c in flat_contacts(std)}
+        leads = {int(l):np.asarray(std, dtype=np.float64) for l, std in w["std"].items()}
+        per.append({l:(s, set(flat_contacts(s))) for l, s in leads.items() if len(s) == 8 and _readable(s)})
+    if not any(per):
+        return None
+    _lone_rings(per)
+    contacts, order = set(), []
+    for leads in per:
+        now = {(l, c) for l, (_, flat) in leads.items() for c in flat}
         contacts |= now
         if len(now) == 1 and (not order or order[-1] != next(iter(now))):
             order.append(next(iter(now)))
     return contacts, order
+
+
+def switched(ev):
+    """
+    True when the stim log names a stimulator channel above 1 (the old uh3_1dbs_directional setup, uh3002/uh3003: channel 2, 3, 4 in turn).
+    There a switch routes the stim and the stimulated contact stays on the amp, so a flat channel isn't evidence of anything.
+    noSwitch experiments log channel -1 (unknown) or 1.
+    """
+    return any(w.get("channel", -1) >= 2 for w in ev.get("trains", []))
+
+
+def _readable(s):
+    #a lead whose std reads exactly 0 or over 1 V on any contact is railed or mis-scaled (uh3002 dbs1 reads 1e9 uV), it can't say what's flat
+    return bool(np.all(np.isfinite(s)) and s.min() > 0 and s.max() < MAX_UV)
+
+
+def _ring_ratio(s, ring, level):
+    return s[ring - 1] / max(np.median([s[c - 1] for c in level]), 1e-9)
+
+
+def _lone_rings(per):
+    """
+    Adds a ring (contact 1 or 8) that was unplugged on its own, which flat_contacts can't see (a plugged ring 8 far from the stim reads
+    down to 0.15 of its level, the same as an unplugged one). Only on a lead carrying the stim with nothing else flat, when the ring is under
+    RING_ALONE_RATIO of its neighboring level and either
+      reads like a contact that is off the amp on the other lead in the same window (unplugged inputs share one floor: uh3005 sedation
+        pre_pp_trial2 lead2 c8 4992 uV next to lead1 c2-4 5384-5766), or
+      drops under RING_DROP of its own ratio in the block's other windows (unplugged for one train of a sequence: uh3008 increment1_depth1_v2
+        c1 0.12 of its level, 0.97 in the next three trains)
+    Input: per = list of windows in time order, each {lead: (std, set of flat contacts)}; the sets are updated in place
+    """
+    flat_before = [{l:set(f) for l, (_, f) in leads.items()} for leads in per]
+    for i, leads in enumerate(per):
+        for l, (s, flat) in leads.items():
+            if flat_before[i][l] or s.max() < MIN_ARTIFACT_UV:
+                continue
+            floor = [per[i][o][0][c - 1] for o in leads if o != l for c in flat_before[i][o]]
+            for ring, level in ((1, (2, 3, 4)), (8, (5, 6, 7))):
+                r = _ring_ratio(s, ring, level)
+                if r >= RING_ALONE_RATIO:
+                    continue
+                twin = bool(floor) and TWIN_RANGE[0] <= s[ring - 1] / np.median(floor) <= TWIN_RANGE[1]
+                own = [_ring_ratio(p[l][0], ring, level) for j, p in enumerate(per) if j != i and l in p and p[l][0].max() >= MIN_ARTIFACT_UV]
+                drop = bool(own) and r < RING_DROP * np.median(own)
+                if twin or drop:
+                    flat.add(ring)
 
 
 def _fmt(contacts):
@@ -486,6 +547,9 @@ def _check_stim(r, ev, case, detail):
     if ev.get("format") == "bv":
         return "sheet_only", "sheet_only" #brainvision rigs: contacts are switched outside the recording, nothing flat to see
     sheet_text = r["stim_contacts"].strip()
+    if switched(ev):
+        detail.append("stim_contacts: stim routed by a switch (stim log names stimulator channel 2 or up), flat channels aren't evidence")
+        return "sheet_only", "sheet_only"
     data = data_contacts(ev)
     trains = ev.get("trains", [])
     if data is None:

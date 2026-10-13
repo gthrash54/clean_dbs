@@ -151,8 +151,12 @@ def channel_types(vhdr, cohort=None):
     """
     cohort = cohort_of(vhdr) if cohort is None else cohort
     out = []
-    for i, (name, units) in enumerate(read_vhdr_channels(vhdr)):
+    channels = read_vhdr_channels(vhdr)
+    names = [n.strip().lower() for n, _ in channels]
+    for i, (name, units) in enumerate(channels):
         c = classify_channel(name, cohort)
+        if names.count(name.strip().lower()) > 1: #BI002 12 Month Baseline: LFP1 on Ch20 and Ch25, which one is the contact isn't known
+            c["source"] += f"; WARNING the header gives this name to {names.count(name.strip().lower())} channels"
         stream = STREAM_NAMES.get((c["type"], c["subtype"]), STREAM_NAMES.get(c["type"], "unknown"))
         if units not in VOLT_UNITS:
             stream = f"{stream}_{re.sub(r'[^A-Za-z0-9]+', '', units) or 'units'}"
