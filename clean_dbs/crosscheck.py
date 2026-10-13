@@ -72,14 +72,17 @@ def lead_groups(store, n_channels):
     return {}
 
 
-def find_block(data_root, study_id, block):
+def find_block(data_root, study_id, block, stage=""):
     """
     Input:
     data_root: folder with one folder per study ID (e.g. ~/DBS Data)
     study_id, block: as typed in blocks.csv (block name matched without caring about case)
-    Returns: the tdt block folder or .vhdr, stage1 first if both stages have one with that name; None if not there
+    stage: the row's stage column ("stage1", "stage2"); "" = either
+    Returns: the tdt block folder or .vhdr, stage1 first if both stages have one with that name and no stage is given; None if not there
     """
     found = [b for b in find_all_blocks(Path(data_root) / study_id, include_dnu=True) if describe_block(b)["block"].lower() == block.lower()]
+    if stage:
+        found = [b for b in found if describe_block(b)["stage"] == stage.replace(" ", "").lower()]
     found = sorted(found, key=lambda b: describe_block(b)["stage"]) #the sheets are stage 1 sheets, so stage1 wins a tie
     return found[0] if found else None
 
@@ -123,7 +126,7 @@ def find_box_block(box_root, crosswalk, study_id, block):
     return None
 
 
-def block_evidence(study_id, block, data_root, box_root=None, crosswalk=None, cache=None, read_stim=True):
+def block_evidence(study_id, block, data_root, box_root=None, crosswalk=None, cache=None, read_stim=True, stage=""):
     """
     Collects what the recording says about one blocks.csv row. Cached as json (one file per row), so reruns are fast.
     Input:
@@ -138,9 +141,9 @@ def block_evidence(study_id, block, data_root, box_root=None, crosswalk=None, ca
       trains: one per stim train (or window in it): voice, t0, t1, time (window middle), amplitude_ua, channel, std ({lead: std in uV of its 8 contacts})
     """
     #only the slow Box stim reads are cached; the local files are read again every time (cheap), so rule changes apply on rerun
-    key = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{study_id}__{block}") + ".json"
+    key = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{study_id}__{block}" + (f"__{stage}" if stage not in ("", "stage1") else "")) + ".json" #stage1 keeps the old cache names
     cached = json.loads((Path(cache) / key).read_text()) if cache is not None and (Path(cache) / key).is_file() else {}
-    path = find_block(data_root, study_id, block)
+    path = find_block(data_root, study_id, block, stage)
     where = "local" if path is not None else ""
     box = find_box_block(box_root, crosswalk or {}, study_id, block) if box_root is not None else None
     if path is None and box is not None:
@@ -448,7 +451,7 @@ def crosscheck(cases, blocks, data_root, box_root=None, crosswalk=None, cache=No
     for i, r in blocks.iterrows():
         if progress:
             print(f"{i + 1}/{len(blocks)} {r['study_id']} {r['block']}", flush=True)
-        evidence.append(block_evidence(r["study_id"], r["block"], data_root, box_root, crosswalk, cache, read_stim))
+        evidence.append(block_evidence(r["study_id"], r["block"], data_root, box_root, crosswalk, cache, read_stim, r.get("stage", "")))
     case_rows = {r["study_id"]:r for _, r in cases.iterrows()}
     #leads counted up through each stage: a lead seen plugged in stays in place for every later block of that stage
     seen = [_leads_seen(ev) for ev in evidence]

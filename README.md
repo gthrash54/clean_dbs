@@ -175,7 +175,7 @@ They use small made-up files, so no recordings are needed.
 ## What's in the cleaned folder
 
 - `<patient>/<stage>/<block>.h5` (uh/UG) or `<study ID>/<session>/<name>.h5` (other cohorts): one cleaned recording
-- `_cases/cases.csv`, `_cases/blocks.csv`: patient and recording info from the OR sheets, with the cross-check `status` of every row (needed before cleaning)
+- `_cases/cases.csv`, `_cases/blocks.csv`: patient and recording info from the OR sheets, with the cross-check `status` of every row (needed before cleaning). blocks.csv has a `stage` column, because a few UG blocks have the same name in stage 1 and stage 2
 - `clean_report.csv`: what the last run did with every recording (cleaned, skipped, recleaned, duplicate, conflict, failed, not run)
 - `_about/`: the user guide PDF
 

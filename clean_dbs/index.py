@@ -2,6 +2,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pandas as pd
+from .tables import block_rows
 
 #columns copied from the case tables (every row; crosscheck_cases.py adds the check_* / status columns, see clean_dbs.crosscheck)
 CASE_COLUMNS = ["implant", "hemisphere", "target1", "target2", "check_implant"]
@@ -68,9 +69,7 @@ def build_index(cleaned_root):
         row = _read_row(path, cleaned_root)
         patient = row["patient"].lower() #Box has UG3003 where the tables have ug3003, so the match ignores case
         case = cases[cases["study_id"].str.strip().str.lower() == patient]
-        match = blocks[(blocks["study_id"].str.strip().str.lower() == patient) & (blocks["block"] == row["block"])]
-        if "stage" in blocks: #if the table ever gets a stage column, use it so stage1/stage2 blocks with the same name don't mix
-            match = match[match["stage"].str.replace(" ", "") == row["stage"]]
+        match = block_rows(blocks, patient, row["block"], row.get("stage", "")) #stage keeps stage1/stage2 blocks with the same name apart
         one_case, one_block = len(case) == 1, len(match) == 1 #more than one matching row = ambiguous, so it's left out
         row["case_status"] = case.iloc[0]["status"] if one_case else ""
         row["block_status"] = match.iloc[0]["status"] if one_block else ""
@@ -266,10 +265,12 @@ def qc_block(h5_path, sample_s=1.0):
     #compare with the verified OR data sheet row, when there is one
     #the cleaned root is the folder holding _cases; other cohorts sit deeper than <patient>/<stage>/, so it isn't always parents[2]
     root = next((p for p in h5_path.parents if (p / "_cases").is_dir()), h5_path.parents[2])
-    patient, block = h5_path.relative_to(root).parts[0], h5_path.stem
+    parts = h5_path.relative_to(root).parts
+    patient, block = parts[0], h5_path.stem
+    stage = parts[1] if len(parts) == 3 and parts[1].startswith("stage") else "" #<patient>/<stage>/<block>.h5 for uh/UG
     _, blocks = load_cases(root)
     blocks = blocks[blocks["verified"].str.strip() != ""] #only hand-checked rows, load_cases now gives every row
-    match = blocks[(blocks["study_id"].str.strip().str.lower() == patient.lower()) & (blocks["block"] == block)] #ignores case, like build_index
+    match = block_rows(blocks, patient, block, stage) #ignores case and keeps stages apart, like build_index
     if len(match) == 1 and match.iloc[0].get("leads_in_place", "").strip().isdigit():
         leads = int(match.iloc[0]["leads_in_place"])
         if leads > 0 and lead_streams == 0:

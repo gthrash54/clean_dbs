@@ -157,7 +157,7 @@ MATLAB only converts one level at a time, so you need a \code{struct()} at each 
 \toprule
 \code{<patient>/<stage>/<block>.h5} (uh/UG), \code{<study ID>/<session>/<name>.h5} (other cohorts) & one cleaned recording (signals, events, stim table, flags, notes, provenance) \\
 \code{_cases/cases.csv} & one row per patient from the OR sheets: dual or single, hemisphere, targets, ECoG, EMG \\
-\code{_cases/blocks.csv} & one row per recording from the OR sheets: target, leads in place, stim contacts, depth, notes \\
+\code{_cases/blocks.csv} & one row per recording from the OR sheets: stage, target, leads in place, stim contacts, depth, notes. The stage keeps a stage 1 and a stage 2 recording with the same name apart (ug3007 erps01) \\
 \code{clean_report.csv} & every recording from the last run: cleaned, skipped, recleaned, duplicate, conflict, failed or not run, and why \\
 \code{_about/} & this guide \\
 \bottomrule

@@ -3,6 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from .tables import block_rows
 
 #contact coordinates come from <cleaned root>/_cases/contacts.csv, built from the lab's Brainlab lead reconstructions
 #(UH3 data/uh3 stl recons: object_centers_acpc.csv). Space is Brainlab ACPC mm in the patient's own hemisphere (+x right,
@@ -58,17 +59,17 @@ def _lead_positions(out_root, study_id, block, stage):
         return {**{k:"final" for k in range(1, lead)}, lead:f"depth{depth}"}
     if stage and stage != "stage1": #stage 2: everything implanted is at its final position
         return {1:"final", 2:"final"}
-    leads = _leads_in_place(out_root, study_id, block)
+    leads = _leads_in_place(out_root, study_id, block, stage)
     return {k:"final" for k in range(1, leads + 1)} #0 = MER/baseline before any lead went in
 
 
-def _leads_in_place(out_root, study_id, block):
+def _leads_in_place(out_root, study_id, block, stage=""):
     #leads in place for this block from _cases/blocks.csv (OR sheet, cross-checked against impedance); 0 if unknown
     blocks = _load(str(Path(out_root) / "_cases" / "blocks.csv"))
     if blocks is None:
         return 0
-    row = blocks[(blocks["study_id"].str.lower() == study_id.lower()) & (blocks["block"] == block)]
-    value = row["leads_in_place"].iloc[0] if len(row) else ""
+    row = block_rows(blocks, study_id, block, stage)
+    value = row["leads_in_place"].iloc[0] if len(row) == 1 else "" #none or ambiguous: unknown
     return int(float(value)) if value.strip() else 0
 
 
