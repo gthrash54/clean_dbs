@@ -35,7 +35,8 @@ def dnu_channels(out_root, study_id, stage, block, names, channels=(), stream_ty
     table = _load(str(Path(out_root) / "_cases" / "dnu_channels.csv"))
     if table is None:
         return flags, ""
-    rows = table[(table["study_id"].str.strip().str.lower() == str(study_id).strip().lower()) & (table["block"] == block)]
+    #block "*" = every recording of that patient and stage (a session-wide note in the lab's sheet)
+    rows = table[(table["study_id"].str.strip().str.lower() == str(study_id).strip().lower()) & table["block"].isin([block, "*"])]
     if stage:
         row_stage = rows["stage"].str.replace(" ", "").str.lower()
         rows = rows[(row_stage == str(stage).replace(" ", "").lower()) | (row_stage == "")]
@@ -77,3 +78,24 @@ def dnu_rows(sheet, source):
             else:
                 unknown.append(name)
     return pd.DataFrame(out, columns=COLUMNS), unknown
+
+
+def apply_block_fixes(rows, fixes):
+    """
+    Points the sheet's recording names at the real recordings, by hand-checked fixes (_cases/dnu_block_fixes.csv), so the lab's sheet
+    itself stays untouched.
+    Input:
+    rows: the table from dnu_rows
+    fixes: a table with study_id, stage, sheet_block (the name in the sheet) and block (the real recording; "" = drop those rows,
+        "*" = every recording of that patient and stage)
+    Returns: the rows with each fixed name replaced (or dropped)
+    """
+    rows = rows.copy()
+    for _, f in fixes.iterrows():
+        hit = (rows["study_id"] == str(f["study_id"]).strip().lower()) & (rows["stage"] == str(f["stage"]).strip().lower()) & \
+              (rows["block"] == str(f["sheet_block"]).strip())
+        if str(f["block"]).strip() == "":
+            rows = rows[~hit]
+        else:
+            rows.loc[hit, "block"] = str(f["block"]).strip()
+    return rows.drop_duplicates().reset_index(drop=True)

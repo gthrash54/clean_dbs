@@ -68,3 +68,18 @@ def test_clean_block_writes_channel_dnu(tmp_path):
         g = f["streams"][stream]
         assert g["channel_dnu"][:].tolist() == [1] + [0] * (len(names[stream]) - 1) and g["channel_dnu"].dtype == np.int8
         assert g.attrs["dnu_list"] == "lab sheet: x.xlsx"
+
+
+def test_block_fixes_and_session_wide_rows(tmp_path):
+    from clean_dbs.dnu import apply_block_fixes
+    rows = pd.DataFrame([["uh9999", "stage1", "clincal_dbs1", "muscle_3", "s"], ["uh9999", "stage1", "gone", "muscle_4", "s"],
+                         ["uh9999", "stage1", "a note, not a block", "muscle_4", "s"]], columns=COLUMNS)
+    fixes = pd.DataFrame([["uh9999", "stage1", "clincal_dbs1", "clinical_dbs1"], ["uh9999", "stage1", "gone", ""],
+                          ["uh9999", "stage1", "a note, not a block", "*"]], columns=["study_id", "stage", "sheet_block", "block"])
+    fixed = apply_block_fixes(rows, fixes)
+    assert fixed.values.tolist() == [["uh9999", "stage1", "clinical_dbs1", "muscle_3", "s"], ["uh9999", "stage1", "*", "muscle_4", "s"]]
+    _table(tmp_path, fixed.values.tolist())
+    names = ["muscle_x"] #an EMG stream, matched by input number
+    assert dnu_channels(tmp_path, "uh9999", "stage1", "any_recording", None, [4], "emg") == ([1], "s") #"*" reaches every recording
+    assert dnu_channels(tmp_path, "uh9999", "stage1", "clinical_dbs1", None, [3, 4], "emg") == ([1, 1], "s")
+    assert dnu_channels(tmp_path, "uh9999", "stage2", "any_recording", None, [4], "emg") == ([0], "") #only that stage
