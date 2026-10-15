@@ -188,7 +188,8 @@ def missing_files(block):
     if block.suffix.lower() == ".vhdr":
         #the .vhdr names its signal file on the "DataFile=" line
         data_file = next((line.split("=", 1)[1].strip() for line in block.read_text(errors="ignore").splitlines() if line.startswith("DataFile=")), block.stem + ".eeg")
-        return [] if (block.parent / data_file).is_file() else [data_file]
+        path = block.parent / data_file
+        return [] if path.is_file() and path.stat().st_size > 0 else [data_file] #a 0-byte .eeg (DLPFC085 burstpp_trial2) has no data either
     #tdt keeps the signal in .tev (or .sev files on some rigs)
     return [] if any(block.glob("*.tev")) or any(block.glob("*.sev")) else [".tev"]
 

@@ -63,3 +63,13 @@ def test_missing_files(tmp_path):
     assert missing_files(tdt / "block3") == [".tev"] #only the index file was copied
     assert missing_files(bv / "rec1.vhdr") == []
     assert missing_files(bv / "rec2_dnu.vhdr") == ["rec2_dnu.eeg"]
+
+
+def test_empty_eeg_counts_as_missing(tmp_path):
+    #DLPFC085 burstpp_trial2: the .eeg on Box is 0 bytes; it used to crash cleaning with "index -1 is out of bounds"
+    from clean_dbs.read_bv import read_bv
+    (tmp_path / "rec.vhdr").write_text("Brain Vision Data Exchange Header File Version 1.0\n[Common Infos]\nDataFile=rec.eeg\nMarkerFile=rec.vmrk\n")
+    (tmp_path / "rec.eeg").write_bytes(b"")
+    assert missing_files(tmp_path / "rec.vhdr") == ["rec.eeg"]
+    with pytest.raises(ValueError, match="empty"):
+        read_bv(tmp_path / "rec.vhdr")

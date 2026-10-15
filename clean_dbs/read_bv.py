@@ -82,9 +82,13 @@ def _open(vhdr_path, t1, t2):
     data_file = next((line.split("=", 1)[1].strip() for line in header.splitlines() if line.startswith("DataFile=")), vhdr_path.stem + ".eeg")
     if not (vhdr_path.parent / data_file).is_file():
         raise FileNotFoundError(f"Signal file {data_file} is missing next to {vhdr_path}; only the header was copied, get the full recording from Box")
+    if (vhdr_path.parent / data_file).stat().st_size == 0: #DLPFC085 burstpp_trial2: the .eeg on Box is 0 bytes, the recording never saved
+        raise ValueError(f"Signal file {data_file} is empty (0 bytes, also on Box): the recording has no data, nothing to clean")
     if t1 < 0 or (t2 != 0 and t2 <= t1):
         raise ValueError(f"Bad time window t1={t1}, t2={t2}: need t1 >= 0 and t2 = 0 (to the end) or t2 > t1")
     raw = _read_raw(vhdr_path, header)
+    if raw.n_times == 0: #a data file too short to hold one sample
+        raise ValueError(f"Signal file {data_file} has no samples: the recording has no data, nothing to clean")
     if t1 >= raw.times[-1]:
         raise ValueError(f"t1={t1} is past the end of the recording ({raw.times[-1]:.1f} s)")
     return raw, header
