@@ -23,7 +23,8 @@ def save_h5(result, out_path, source_dir):
       /streams/<name>/data       channels x samples, float32, volts
                                  (MATLAB's h5read flips it: you get samples x channels)
       /streams/<name>/channels   channel numbers
-      /streams/<name>/channel_x, channel_y, channel_z, channel_position + attr coord_space: contact coordinates (lead channels, when recon exists)
+      /streams/<name>/channel_x, channel_y, channel_z, channel_position + attr coord_space: contact coordinates (only streams with lead
+                                 channels, when the patient has a recon; info coord_status says recon, no_recon or no_contacts_csv)
       /streams/<name> attr analog_gain: tdt mer streams, electrode volts = data / analog_gain
       /streams/<name>/channel_dnu (1 = the lab marked it do not use) + attr dnu_list (where that came from, "none" = recording not listed)
       /streams/<name>/channel_names, channel_group, channel_target, channel_contact, channel_source (+ brainvision: channel_subtype,

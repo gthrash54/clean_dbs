@@ -3,9 +3,9 @@
 #
 # submit from the clean_dbs folder (the one with pyproject.toml), like:
 #   mkdir -p logs
-#   sbatch --array=0-54 scripts/clean_slurm.sh <manifest.csv> <out folder> 10
+#   sbatch --array=0-57 scripts/clean_slurm.sh <manifest.csv> <out folder> 10
 # anything after the chunk size goes to clean.py, e.g. --force to clean everything again
-# make_manifest.py prints the right --array range for your chunk size
+# make_manifest.py prints the right --array range for your chunk size (0-57 was the uh/UG run: 574 recordings, 10 per task)
 # the #SBATCH lines below are defaults, anything given to sbatch on the command line wins
 
 #SBATCH --job-name=clean_dbs
@@ -44,7 +44,13 @@ export TZ=America/Chicago
 # the case tables go into every file (targets, case_status); stop here instead of in every task's python (clean.py checks too)
 # ${EXTRA[@]+...} looks odd but is needed: cheaha's bash (4.2) calls an empty array "unbound" under set -u, newer bash doesn't
 if [ ! -f "$OUT/_cases/cases.csv" ] && [[ " ${EXTRA[*]+${EXTRA[*]}} " != *" --no-cases "* ]]; then
-    echo "no $OUT/_cases/cases.csv, copy _cases (cases.csv, blocks.csv) into the out folder first" >&2
+    echo "no $OUT/_cases/cases.csv, copy _cases (cases.csv, blocks.csv, and contacts.csv for the uh contact coordinates) into the out folder first" >&2
+    exit 1
+fi
+# the lab's do-not-use list goes with them (channel_dnu); --no-cases or --no-dnu clean without it on purpose
+if [ -f "$OUT/_cases/cases.csv" ] && [ ! -f "$OUT/_cases/dnu_channels.csv" ] && [[ " ${EXTRA[*]+${EXTRA[*]}} " != *" --no-cases "* ]] \
+        && [[ " ${EXTRA[*]+${EXTRA[*]}} " != *" --no-dnu "* ]]; then
+    echo "no $OUT/_cases/dnu_channels.csv, copy it in with the other case tables (or add --no-dnu to clean without the lab's do-not-use list)" >&2
     exit 1
 fi
 

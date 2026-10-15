@@ -151,8 +151,10 @@ else:
 
 #the targets and case_status in every file come from the case tables, so a missing table would quietly leave them all blank
 if not (Path(out_folder) / "_cases" / "cases.csv").is_file() and not args.no_cases:
-    sys.exit(f"no _cases/cases.csv in the out folder; copy _cases (cases.csv, blocks.csv) in first, or add --no-cases for a cohort without case tables")
-if (Path(out_folder) / "_cases" / "cases.csv").is_file() and not (Path(out_folder) / "_cases" / "dnu_channels.csv").is_file() and not args.no_dnu:
+    sys.exit(f"no _cases/cases.csv in the out folder; copy _cases (cases.csv, blocks.csv, and contacts.csv for the uh contact coordinates) in first, "
+             "or add --no-cases for a cohort without case tables")
+if (Path(out_folder) / "_cases" / "cases.csv").is_file() and not (Path(out_folder) / "_cases" / "dnu_channels.csv").is_file() \
+        and not (args.no_dnu or args.no_cases): #--no-cases (cohorts without case tables) skips the do-not-use list too
     #without it every file would quietly say "not listed", the same as a recording the lab never marked
     sys.exit("no _cases/dnu_channels.csv in the out folder; copy it in with the other case tables (scripts/make_dnu_table.py builds it), "
              "or add --no-dnu to clean without the lab's do-not-use list")

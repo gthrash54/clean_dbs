@@ -10,6 +10,12 @@ from .tables import block_rows
 #+y anterior, +z superior). Only the final lead position is imaged (the lab calls it depth5); the other inching depths are that
 #position slid along the lead's trajectory by the depth table's steps. Only uh cases have recons so far (18 patients).
 
+#cohorts with recons in contacts.csv. Cleaning one of them without the table warns (clean_block), because every file would come out
+#with no coordinates and look just like a patient who has no recon
+RECON_COHORTS = ("uh",)
+#a channel_group that is a lead in the brain (lead1, lead2); lead2_not_implanted and lead2_not_connected aren't
+LEAD_GROUP = re.compile(r"lead(\d)")
+
 
 def contact_coords(out_root, study_id, block, groups, contacts, stage=""):
     """
@@ -20,19 +26,21 @@ def contact_coords(out_root, study_id, block, groups, contacts, stage=""):
     groups, contacts: per-channel channel_group / channel_contact from channel_map (lead1/lead2 and "1".."8"; others are skipped)
     stage: "stage1", "stage2", ... (stage 2 recordings have every implanted lead at its final position)
     Returns: (x, y, z, position, space) where x/y/z are float lists (NaN = not a lead contact, lead not in the brain yet, or no recon),
-             position is a per-channel text list ("depth3", "final", or ""), and space describes the coordinate space ("" if none)
+             position is a per-channel text list ("depth3", "final", or ""), and space describes the coordinate space.
+             space is "" when there are no coordinates to write: no contacts.csv, no recon for this patient, or no lead channel in this
+             stream (an ecog or emg stream gets no coordinates at all, not a column of NaN)
     """
     table = _load(str(Path(out_root) / "_cases" / "contacts.csv"))
     n = len(groups)
     x, y, z, pos = [np.nan] * n, [np.nan] * n, [np.nan] * n, [""] * n
-    if table is None:
+    if table is None or not any(LEAD_GROUP.fullmatch(str(g)) for g in groups):
         return x, y, z, pos, ""
     rows = table[table["study_id"].str.lower() == study_id.lower()]
     if rows.empty:
         return x, y, z, pos, ""
     in_brain = _lead_positions(out_root, study_id, block, stage)
     for i, (group, contact) in enumerate(zip(groups, contacts)):
-        m = re.fullmatch(r"lead(\d)", str(group))
+        m = LEAD_GROUP.fullmatch(str(group))
         if not m or not str(contact).isdigit():
             continue
         where = in_brain.get(int(m.group(1)), "")
@@ -49,6 +57,19 @@ def contact_coords(out_root, study_id, block, groups, contacts, stage=""):
             pos[i] = where
     space = rows["space"].iloc[0] if "space" in rows else ""
     return x, y, z, pos, space
+
+
+def coord_status(out_root, study_id):
+    """
+    Whether a file could get contact coordinates, saved as info coord_status so a missing table can't pass for a patient with no recon.
+    Input: out_root (top of the cleaned set), study_id (e.g. "uh3021")
+    Returns: "recon" (_cases/contacts.csv has this patient), "no_recon" (the table is there but this patient isn't in it),
+             or "no_contacts_csv" (there was no _cases/contacts.csv in the out folder, so nothing was looked up)
+    """
+    table = _load(str(Path(out_root) / "_cases" / "contacts.csv"))
+    if table is None:
+        return "no_contacts_csv"
+    return "recon" if (table["study_id"].str.lower() == str(study_id).lower()).any() else "no_recon" #matched like contact_coords does
 
 
 def _lead_positions(out_root, study_id, block, stage):

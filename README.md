@@ -78,7 +78,8 @@ Every lead and ECoG channel in a cleaned file says what it is, right next to the
 - `channel_names`, `channel_group` (ecog_anterior, ecog_posterior, lead1, lead2, emg, ...), `channel_target` (STN, GPi, from the case table), `channel_contact`
 - contact numbering is the lab's 1-8 for every lead: 1 = bottom (distal) ring, 2/3/4 = lower segments, 5/6/7 = upper segments (5 sits above 2, 6 above 3, 7 above 4), 8 = top ring. On a Medtronic SenSight lead that's levels 0, 1a-c, 2a-c, 3. Which way each segment faces isn't recorded.
 - ECoG: anterior strip = 1-6, posterior = 7-12 (from the OR sheets). TDT lead 1 = 13-20, lead 2 = 21-28, worked out from impedance and stim in the data (`channel_source` says so) because the rig wiring isn't written down anywhere. Lead 1 is the lead implanted and stimulated first; stage 2 BrainVision has the STN lead on DBS1-8 and GPi on DBS9-16 (lab collection guide).
-- **Contact coordinates** (`channel_x`, `channel_y`, `channel_z` in mm, `channel_position`, and the stream's `coord_space`): where each lead contact was during that recording, from the lab's Brainlab reconstructions (`_cases/contacts.csv`). The space is Brainlab ACPC in the patient's own hemisphere (+x right, +y anterior, +z superior). Only the final lead position is imaged; inching blocks (`increment1_depth3`, ...) get that position slid along the lead to the depth they were recorded at. A lead that wasn't in the brain yet gets NaN. So far only 18 uh patients have reconstructions.
+- **Contact coordinates** (`channel_x`, `channel_y`, `channel_z` in mm, `channel_position`, and the stream's `coord_space`): where each lead contact was during that recording, from the lab's Brainlab reconstructions (`_cases/contacts.csv`). The space is Brainlab ACPC in the patient's own hemisphere (+x right, +y anterior, +z superior). Only the final lead position is imaged; inching blocks (`increment1_depth3`, ...) get that position slid along the lead to the depth they were recorded at. A lead that wasn't in the brain yet gets NaN. Only streams with lead channels get these fields, so an ecog or emg stream has none. So far only 18 uh patients have reconstructions. `coord_status` in the info says which case a file is: `recon` (the patient is in `contacts.csv`), `no_recon` (the table was there but the patient isn't in it) or `no_contacts_csv` (there was no `_cases/contacts.csv` when it was cleaned, so nothing was looked up).
+- **Do not use** (`channel_dnu`, 1 = don't use it, and the stream's `dnu_list`): channels the lab marked do not use for that recording (bad or noisy contacts, contacts still in the cannula, bad ECoG or EMG), from `_cases/dnu_channels.csv`. `dnu_list` says where the list came from, or `none` when the recording isn't on it, so then nothing is known and every `channel_dnu` is 0. The data itself isn't changed. So far the list covers uh stage 1, from the lab's sheet.
 - TDT microelectrode (MER) streams carry `analog_gain` = 4000: they come from the AlphaOmega analog output, so electrode volts = data / 4000. Which AO output fed which TDT input isn't documented, so check before comparing MER amplitudes to LFP.
 
 ## Using it from MATLAB
@@ -111,6 +112,10 @@ python scripts/clean.py "<raw folder>" "<cleaned folder>"
 
 The cleaned folder has to have the case tables in it first (`<cleaned folder>/_cases/cases.csv` and `blocks.csv`, see below): every file gets its lead targets and a `case_status` from them, so `clean.py` won't start without them. For a cohort with no case tables, add `--no-cases` (targets stay blank, `case_status` is `missing`).
 
+For uh, put `_cases/contacts.csv` in too. That's where the contact coordinates come from. `clean.py` still runs without it, but every uh file comes out with no coordinates, so `clean_block` prints a warning once per run and the files say `coord_status` = `no_contacts_csv`.
+
+Put `_cases/dnu_channels.csv` in as well (the lab's do-not-use list, see below). Once `cases.csv` is there, `clean.py` won't start without it, so a run can't quietly go out with every file saying "not listed". Add `--no-dnu` to clean without it on purpose. `--no-cases` skips it too, since a cohort with no case tables has no list.
+
 The raw folder can be the whole inventory, one patient, or one surgery folder. Each uh/UG recording becomes `<cleaned folder>/<patient>/<stage>/<block>.h5`; recordings from the other BrainVision cohorts (DLPFC, BI, PP, MC, ...) become `<cleaned folder>/<study ID>/<session>/<name>.h5`, where the session is the subfolder path below the study ID (lowercase, spaces as `_`, nothing when the file sits right in the ID folder). Each file has:
 
 - the signals in volts, tagged by type (lfp, eeg, mer, emg, audio, accel, joystick, stim_monitor, unknown) with channel names where we know them; BrainVision recordings are split into one stream per channel type (`lead`, `ecog`, `emg`, ...)
@@ -125,6 +130,8 @@ Cleaning reads, checks and writes the recording one window at a time (`window_mb
 
 Blocks that are already cleaned get skipped, so adding a new patient is the same command. A cleaned file is only skipped if it opens and was made by the current `CLEAN_VERSION` (in `clean_dbs/version.py`, saved as `clean_version` at the top of every `.h5`); a file that won't open or comes from an older version is cleaned again. `--force` cleans everything again. A recording copied under more than one number folder on Box is cleaned once; the other copies show up in the report as `duplicate` (same size) or `conflict` (same name and place but a different size, the bigger one is cleaned; check these by hand).
 
+**Editing a case table doesn't make a file stale.** A file only counts as out of date when `CLEAN_VERSION` goes up, so a fix to `cases.csv`, `blocks.csv` or `contacts.csv` only reaches the files cleaned after it. To get the fix into files that are already there, clean them again with `--force` (pointing at just that patient's raw folder is enough), or wait for the next version bump.
+
 **The CLEAN_VERSION rule:** whenever you change the code in a way that changes what goes into a cleaned file (a new or renamed field, different values, a different flag), add 1 to `CLEAN_VERSION` in `clean_dbs/version.py` in the same commit, and add a line to the list below. Otherwise the next run skips every old file and the cleaned set ends up a mix of old and new. Changes that leave the `.h5` the same (speed, messages, docs) don't need a bump.
 
 - `1`: first numbered version (truncated `.tev` check, Chicago start time, stream-based duration, `case_status`, saturation at the rail)
@@ -133,6 +140,7 @@ Blocks that are already cleaned get skipped, so adding a new patient is the same
 - `4`: fixes from a trial run on the other cohorts: better `condition`/`state` from names (a folder counts when the file name says nothing, a study ID in a file name isn't a condition, `impedance_check`, `off_meds`/`on_meds`), the same ID nested inside itself keeps its session; stimulator programs found by their header whatever they're called, stricter sidecar matching and matching per marker code, no condition when two TTL tables disagree, binary MC_Stimulus files listed under `/sidecars`; headers that give two channels the same name can be read
 - `5`: inching blocks named without the underscore (uh3002's `increment1depth3`) get their own depth's contact coordinates instead of the final ones
 - `6`: an implanted lead that was never plugged into the amplifier (uh3016's GPi lead) is labeled `lead<N>_not_connected` with no target, from a cases.csv note "<target> lead never connected"
+- `7`: `channel_dnu` and `dnu_list` on every stream (the lab's do-not-use list, from `_cases/dnu_channels.csv`). Only streams with lead channels get contact coordinates (ecog, emg and the rest used to get all-NaN `channel_x/y/z` and a `coord_space`), `coord_status` in the info (`recon`, `no_recon`, `no_contacts_csv`), and "post op", "postop" and "post_op" folders give the state `postop`. The two-word states (pre op, post dbs, off meds, on meds) also match when written with a space or a dash
 
 A TDT `.tev` that was cut short by a stopped copy fails with "cut short" instead of being read (tdt would fill the missing part with zeros without saying anything). `python scripts/check_copy.py "<raw folder>"` lists those, and recordings missing their signal file, before you clean.
 
@@ -165,7 +173,9 @@ r = clean_dbs_load("<cleaned folder>/uh3021/stage1/clinical_dbs1.h5", "types", {
 x = r.streams.ecos.data;   % channels x samples, single, volts
 ```
 
-Only the window you ask for is read from disk. Flags (like `r.flags.saturation_ecos`) cover the whole recording. `r.stim` is the stim table (one entry per pulse inside the window, text columns as cell arrays), `r.info` has every info attribute (including `duration_header` and `case_status`) and `r.provenance` has `clean_version`.
+Only the window you ask for is read from disk. Flags (like `r.flags.saturation_ecos`) cover the whole recording. `r.stim` is the stim table (one entry per pulse inside the window, text columns as cell arrays), `r.info` has every info attribute (including `duration_header`, `case_status` and `coord_status`) and `r.provenance` has `clean_version`.
+
+In Python, `load_type("<cleaned file>.h5", "lfp")` (from `clean_dbs`) gives every lfp stream in a file with its data, `fs`, channel labels (`channel_names`, `channel_group`, ...) and contact coordinates, the same per-channel fields `clean_dbs_load` gives.
 
 ## Running the tests
 
@@ -180,6 +190,9 @@ They use small made-up files, so no recordings are needed.
 
 - `<patient>/<stage>/<block>.h5` (uh/UG) or `<study ID>/<session>/<name>.h5` (other cohorts): one cleaned recording
 - `_cases/cases.csv`, `_cases/blocks.csv`: patient and recording info from the OR sheets, with the cross-check `status` of every row (needed before cleaning). blocks.csv has a `stage` column, because a few UG blocks have the same name in stage 1 and stage 2
+- `_cases/contacts.csv`: where each lead contact is, from the Brainlab reconstructions (uh only so far). Without it the uh files get no contact coordinates
+- `_cases/dnu_channels.csv`: the channels the lab marked do not use, one row per channel per recording (a blank channel means the recording was checked and nothing is bad). `scripts/make_dnu_table.py` builds it from the lab's `UH3 or notes - data to not use.xlsx` (I keep a copy in `_cases/lab_sheets/`): `python scripts/make_dnu_table.py "<sheet>.xlsx" <cleaned folder>/_cases`. Reading the .xlsx needs openpyxl (`pip install -e ".[sheets]"`), cleaning doesn't. It prints any sheet row that matches no recording
+- `_cases/dnu_block_fixes.csv`: hand-checked fixes for sheet rows whose recording name doesn't match a real recording (typos, a note typed in the trial column, renamed recordings). Columns `study_id`, `stage`, `sheet_block`, `block` (the real recording, blank = drop the row, `*` = every recording of that patient and stage) and `decided` (who decided and why). `make_dnu_table.py` applies it, so the lab's sheet itself stays untouched
 - `clean_report.csv`: what the last run did with every recording (cleaned, skipped, recleaned, duplicate, conflict, failed, excluded, not run); with a manifest named `manifest_<cohort>.csv` it's `clean_report_<cohort>.csv`
 - `_cases/renames.csv`, `_cases/allowed_words.txt`, `_cases/names_to_check.csv`: the names check (see above). `renames.csv` and `names_to_check.csv` have the original names in them, so leave them (and the `manifest*.csv` files, which have the raw paths) out when you share the cleaned set
 - `_about/`: the user guide PDF

@@ -118,16 +118,22 @@ mkdir -p $USER_SCRATCH/clean_out
 python scripts/make_manifest.py $USER_DATA/dbs_raw $USER_SCRATCH/clean_out/manifest.csv --chunk 10
 ```
 
-It prints how many recordings it found, how many are missing signal files, how much signal there is, the biggest peak memory estimate (`est_peak_gb`, also a column, next to `signal_gb`), and the `--array` range to use. It stops with an error if two recordings would write the same cleaned file (names that differ only in capitals count as the same, since Mac and Windows treat them that way); fix those folder names first. `--chunk 10` means 10 blocks per task, so about 550 blocks becomes 55 tasks of roughly 5 minutes each. Recordings inside an `Imaging` folder are skipped, so scans left over from an older copy don't matter. Add `--skip-missing` to leave out blocks that are missing their `.tev` / `.eeg` (it prints how many it skipped). Without it, those blocks just fail quickly and show up in the report as failed, so you can see what still needs copying.
+It prints how many recordings it found, how many are missing signal files, how much signal there is, the biggest peak memory estimate (`est_peak_gb`, also a column, next to `signal_gb`), and the `--array` range to use. It stops with an error if two recordings would write the same cleaned file (names that differ only in capitals count as the same, since Mac and Windows treat them that way); fix those folder names first. `--chunk 10` means 10 blocks per task. The uh/UG run had 574 recordings, so it printed `--array=0-57` (58 tasks of roughly 5 minutes each). Use the range it prints for your manifest, since it changes whenever the recordings do. Recordings inside an `Imaging` folder are skipped, so scans left over from an older copy don't matter. Add `--skip-missing` to leave out blocks that are missing their `.tev` / `.eeg` (it prints how many it skipped). Without it, those blocks just fail quickly and show up in the report as failed, so you can see what still needs copying.
 
 ### Put the case tables in the out folder
 
-Every cleaned file gets the targets and a `case_status` from `_cases/cases.csv`, so `clean.py` won't start without it. Copy `_cases` (with `cases.csv` and `blocks.csv`) into the out folder before submitting:
+Every cleaned file gets the targets and a `case_status` from `_cases/cases.csv`, so `clean.py` won't start without it. Copy `_cases` (with `cases.csv`, `blocks.csv`, `contacts.csv` and `dnu_channels.csv`) into the out folder before submitting:
 
 ```
 rclone copy "box:<cleaned folder on Box>/_cases" $USER_SCRATCH/clean_out/_cases
-ls $USER_SCRATCH/clean_out/_cases     # cases.csv  blocks.csv
+ls $USER_SCRATCH/clean_out/_cases     # cases.csv  blocks.csv  contacts.csv  dnu_channels.csv
 ```
+
+`contacts.csv` has the uh contact coordinates. Cleaning still runs without it, but the uh files come out with no coordinates. Each task's `.err` log then has a warning, and the files say `coord_status` = `no_contacts_csv`.
+
+The case tables are read when a file is cleaned. Editing them later doesn't make that file stale, only a `CLEAN_VERSION` bump does. So if you fix a table after a run, the files already cleaned keep the old values until you clean them again with `--force` (step 8).
+
+`dnu_channels.csv` is the lab's do-not-use list (`channel_dnu` in every file, see the README). With `cases.csv` there, cleaning stops without it, so a run can't quietly go out with no flags. Add `--no-dnu` after the chunk size to clean without it on purpose. `--no-cases` (a cohort without case tables) skips it too.
 
 For a cohort with no case tables, add `--no-cases` after the chunk size in the `sbatch` line (the targets then stay blank and `case_status` is `missing`).
 
@@ -142,13 +148,13 @@ mkdir -p logs
 sbatch --array=0-0 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv $USER_SCRATCH/clean_out 10
 ```
 
-Try just task 0 first like that. When it works, submit the rest with the range `make_manifest.py` printed (it won't redo task 0's blocks, see step 8):
+Try just task 0 first like that. When it works, submit the rest with the range `make_manifest.py` printed (it won't redo task 0's blocks, see step 8). For the uh/UG run (574 recordings, 10 per task) that was `0-57`:
 
 ```
-sbatch --array=0-54 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv $USER_SCRATCH/clean_out 10
+sbatch --array=0-57 scripts/clean_slurm.sh $USER_SCRATCH/clean_out/manifest.csv $USER_SCRATCH/clean_out 10
 ```
 
-The three things after the script are the manifest, the out folder, and the chunk size. Anything after the chunk size goes to `clean.py` (for example `--force`, see step 8). The chunk **has to be the same number** you gave `make_manifest.py`, or the tasks won't line up with the `--array` range. To cap how many tasks run at the same time, add `%`, for example `--array=0-54%20`.
+The three things after the script are the manifest, the out folder, and the chunk size. Anything after the chunk size goes to `clean.py` (for example `--force`, see step 8). The chunk **has to be the same number** you gave `make_manifest.py`, or the tasks won't line up with the `--array` range. To cap how many tasks run at the same time, add `%`, for example `--array=0-57%20`.
 
 The defaults are set at the top of `scripts/clean_slurm.sh`: `express` partition (2 hour max), 1 hour per task, 4 GB of memory, 1 CPU. 4 GB is enough for every recording: cleaning reads one window at a time, so a block peaks at about 0.5 GB whatever its size (`est_peak_gb` in the manifest). In the first full run each task used 230 to 505 MB and took 1 to 9 minutes, so the defaults have plenty of room. You can change any of them when you submit, for example `sbatch --time=02:00:00 ...`.
 
@@ -203,7 +209,7 @@ Rerunning is safe. `clean_block` skips a block whose `.h5` is already there **an
 
 - To rerun everything that didn't finish: submit the same `sbatch` command again. Finished blocks are skipped in seconds and show up as "skipped" in the new report.
 - To rerun only some tasks: give just those task numbers, for example `sbatch --array=3,17,40 ...`. Find them with `sacct` or in the "row" column of the report (task = row // chunk).
-- To clean everything again on purpose (say a fix that didn't bump `clean_version`), add `--force` after the chunk size: `sbatch --array=0-54 scripts/clean_slurm.sh <manifest> <out> 10 --force`.
+- To clean everything again on purpose (say a fix that didn't bump `clean_version`, or an edit to the case tables), add `--force` after the chunk size and use the same range as before: `sbatch --array=0-57 scripts/clean_slurm.sh <manifest> <out> 10 --force`.
 - If tasks ran out of time, add `--time=02:00:00` to the `sbatch` line.
 
 Then merge again (step 7). The merged report keeps the newest try of every row, so it's fine to rerun with a different chunk size.

@@ -3,6 +3,7 @@ import pytest
 from clean_dbs.cohorts import COHORTS, cohort_of, condition_of
 from clean_dbs.block_info import describe_block, output_path, find_duplicates, source_path, recording_condition
 from clean_dbs.find_blocks import find_all_blocks
+from clean_dbs import privacy
 
 #made-up Box-like paths: <number folder>/<study id>/...; numbers and IDs are fake
 BOX = Path("box") / "100.0000001"
@@ -98,6 +99,19 @@ def test_condition_of():
     assert condition_of("lfp_lesion")[0] == "lesion"
     assert condition_of("something") == ("", "")
     assert recording_condition(BOX / "uh9999" / "stage 2 surgery" / "contact1.vhdr") == ("contact", "")
+
+
+def test_postop_state():
+    #"post op", "postop" and "post_op" folders are on Box (DLPFC) and used to give no state; postop is kept apart from post_dbs
+    for folder in ("post op", "Postop", "post_op", "post-op"):
+        assert condition_of(f"{folder}/rest") == ("rest", "postop")
+        assert privacy.is_clear(folder) #post, op and postop are already known words, so the names check lets them through
+    assert condition_of("post op/exp1_postdbs")[1] == "post_dbs;postop" #both apply, neither eats the other
+    assert condition_of("exp1_postdbs")[1] == "post_dbs" and condition_of("post dbs")[1] == "post_dbs"
+    assert condition_of("impedencetest_postopening")[1] == "" #like preopening, opening isn't op
+    #the other two-word states take a space or - too
+    assert condition_of("pre op/x")[1] == "preop" and condition_of("x/off meds")[1] == "off_meds" and condition_of("x/on meds")[1] == "on_meds"
+    assert condition_of("x/stimulation meds")[1] == "" #"on" at the end of a word isn't on_meds
 
 
 def write_bv(folder, name, n_bytes):

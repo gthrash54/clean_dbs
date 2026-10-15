@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from clean_dbs.read_tdt import tdt_windows, WINDOW_MB
 from clean_dbs.read_bv import bv_windows
@@ -9,7 +10,7 @@ from clean_dbs.channel_map import channel_table, connected_contacts, leads_impla
 import pandas as pd
 from clean_dbs.stim_events import stim_events, bv_clock_time
 from clean_dbs.markers import label_bv
-from clean_dbs.coords import contact_coords
+from clean_dbs.coords import contact_coords, coord_status, RECON_COHORTS
 from clean_dbs.dnu import dnu_channels
 from clean_dbs.cohorts import cohort_of
 from clean_dbs import privacy
@@ -38,6 +39,11 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
     case_row = _case_row(out_root, block_dir)
     implanted = leads_implanted(case_row) #a lead that never went in is labeled lead<N>_not_implanted
     connected = leads_connected(case_row) #one that went in but was never plugged in is labeled lead<N>_not_connected
+    about = describe_block(block_dir)
+    #recon, no_recon or no_contacts_csv, kept in the file so a missing contacts.csv can't pass for a patient with no recon
+    coords_found = coord_status(out_root, about["patient"])
+    if coords_found == "no_contacts_csv" and cohort_of(about["patient"]) in RECON_COHORTS:
+        _warn_no_contacts(out_root)
     is_bv = block_dir.suffix.lower() == ".vhdr"
     for name, s in r["streams"].items(): #tag each stream lfp / mer / emg / audio / stim_monitor, see datatypes.py (read_bv already typed its streams)
         if "type" not in s:
@@ -68,7 +74,7 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
     #what the recording is, from the folder and file names (see cohorts.py), so cohorts can be pooled by condition later; blank = names don't say
     r["info"]["condition"], r["info"]["state"] = recording_condition(block_dir)
     r["info"]["case_status"] = case_targets[3] #how far to trust the targets above: match, conflict, sheet_only, unchecked, missing (no row)
-    about = describe_block(block_dir)
+    r["info"]["coord_status"] = coords_found
     if about["block"] != (block_dir.stem if is_bv else block_dir.name): #renamed in renames.csv; the reader took it from the file name
         r["info"]["block"] = about["block"]
     for key in ("cohort", "session", "parent_id"): #only other cohorts have these
@@ -102,6 +108,20 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
             r["flags"][f"impedance_{name}"] = check
         write_rest(f, r, block_dir)
     return out_path
+
+
+#out folders already warned about, so a run over hundreds of uh blocks says it once, not once per block
+_warned_no_contacts = set()
+
+
+def _warn_no_contacts(out_root):
+    #uh patients have recons, so cleaning them without _cases/contacts.csv quietly leaves every file with no coordinates
+    if str(out_root) in _warned_no_contacts:
+        return
+    _warned_no_contacts.add(str(out_root))
+    warnings.warn("no _cases/contacts.csv in the out folder, so the uh files from this run get no contact coordinates "
+                  "(info coord_status = no_contacts_csv). Copy contacts.csv into _cases and clean them again with --force", stacklevel=3)
+
 
 def _case_targets(out_root, block_dir):
     #lead 1 / lead 2 targets (e.g. STN, GPi), the ecog entry and the cross-check status from <cleaned root>/_cases/cases.csv

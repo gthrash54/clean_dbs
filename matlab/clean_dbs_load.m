@@ -24,7 +24,7 @@ function out = clean_dbs_load(h5file, varargin)
 %     out.sidecars.<name>: stimulator / task files next to a brainvision recording, one field per column, plus kind, file,
 %                         matched, match_* (always whole, not cut to the window)
 %     out.info:           block, start, duration (from the streams), duration_header, subject, video, condition, state,
-%                         case_status, ... (every attribute the cleaning saved)
+%                         case_status, coord_status, ... (every attribute the cleaning saved)
 %     out.flags:          saturation_<stream> (channel, start, end), new_segments (time, missing, is_gap), dnu
 %                         flags always cover the whole recording, even with a time window
 %     out.provenance:     clean_version, source, source_bytes, clean_dbs_commit, created, package versions

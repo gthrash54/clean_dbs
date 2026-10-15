@@ -67,11 +67,18 @@ def load_type(h5_path, data_type, subtype=None):
     h5_path: a cleaned file from clean.py
     data_type: "lfp", "mer", "emg", "audio", "stim_monitor", "eeg", "accel", "joystick", "force", "aux", "unused" or "unknown"
     subtype: optional, e.g. "spike" to get only the spike-band mer streams
-    Returns: {stream name: {"data", "fs", "start_time", "channels", "device", "type", "subtype", "units"}}
+    Returns: {stream name: {"data", "fs", "start_time", "channels", "device", "type", "subtype", "units", "rail", ...}} plus, when the
+             stream has them, what each channel is, like clean_dbs_load.m gives: channel_names, channel_group, channel_target,
+             channel_contact, channel_source, ... as lists of text, and the contact coordinates channel_x, channel_y, channel_z as
+             float arrays in mm (NaN = unknown) with channel_position and the stream's coord_space
     """
     out = {}
     with h5py.File(Path(h5_path), "r") as f:
         for name, g in f["streams"].items():
             if g.attrs.get("type") == data_type and (subtype is None or g.attrs.get("subtype") == subtype):
                 out[name] = {"data":g["data"][:], "channels":g["channels"][:], **{key:g.attrs[key] for key in g.attrs}}
+                for key in g: #per-channel labels and coordinates, saved as one dataset each next to data (see save_h5)
+                    if key.startswith("channel_"):
+                        is_text = h5py.check_string_dtype(g[key].dtype) is not None
+                        out[name][key] = g[key].asstr()[:].tolist() if is_text else g[key][:]
     return out

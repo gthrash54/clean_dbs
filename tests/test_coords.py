@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from clean_dbs.coords import contact_coords, _load
+from clean_dbs.coords import contact_coords, coord_status, _load
 
 
 def _tables(root):
@@ -62,3 +62,22 @@ def test_depth_name_without_underscore():
     from clean_dbs.coords import _lead_positions
     assert _lead_positions("unused", "uh3002", "increment1depth3", "stage1") == {1:"depth3"}
     assert _lead_positions("unused", "uh3002", "Increment2_Depth4", "stage1") == {1:"final", 2:"depth4"}
+
+
+def test_streams_without_lead_channels_get_no_coordinates(tmp_path):
+    #an ecog or emg stream used to get all-NaN channel_x/y/z and a coord_space whenever the patient had a recon
+    _tables(tmp_path)
+    x, _, _, pos, space = contact_coords(tmp_path, "uh9999", "crosstalk", ["ecog_anterior"] * 6, [str(c) for c in range(1, 7)])
+    assert space == "" and len(x) == 6 and all(np.isnan(x))
+    _, _, _, _, space = contact_coords(tmp_path, "uh9999", "crosstalk", ["lead2_not_connected"] * 8, [str(c) for c in range(1, 9)])
+    assert space == "" #a lead that was never plugged in isn't a lead in the brain
+    _, _, _, pos, space = contact_coords(tmp_path, "uh9999", "mer1_traj1_v1", GROUPS, CONTACTS)
+    assert space == "ACPC test" and all(p == "" for p in pos) #a lead stream keeps its coordinates (all NaN) when no lead is in yet
+
+
+def test_coord_status(tmp_path):
+    #a missing contacts.csv used to look the same as a patient with no recon
+    _load.cache_clear()
+    assert coord_status(tmp_path, "uh9999") == "no_contacts_csv"
+    _tables(tmp_path)
+    assert coord_status(tmp_path, "UH9999") == "recon" and coord_status(tmp_path, "uh0000") == "no_recon"

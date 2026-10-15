@@ -14,5 +14,8 @@
 #6: an implanted lead never plugged into the amplifier (cases.csv note "<target> lead never connected", uh3016 GPi) is labeled
 #   lead<N>_not_connected with no target
 #7: per-channel channel_dnu (1 = the lab marked it do not use: bad contacts, contacts still in the cannula) and stream attribute dnu_list,
-#   from _cases/dnu_channels.csv (scripts/make_dnu_table.py builds it from the lab's "UH3 or notes - data to not use.xlsx")
+#   from _cases/dnu_channels.csv (scripts/make_dnu_table.py builds it from the lab's "UH3 or notes - data to not use.xlsx").
+#   only streams with lead channels get contact coordinates (ecog, emg, ... no longer get all-NaN channel_x/y/z and coord_space);
+#   info coord_status (recon, no_recon, no_contacts_csv); "post op"/"postop" folders give state postop, and two-word states
+#   (pre op, post dbs, off meds, on meds) match with a space or - too
 CLEAN_VERSION = 7

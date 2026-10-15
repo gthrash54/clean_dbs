@@ -87,7 +87,7 @@ The raw folder can be the whole inventory, one patient, or one surgery folder. E
 \code{<cleaned folder>/<patient>/<stage>/<block>.h5}; the other BrainVision cohorts (DLPFC, BI, PP, MC, ...) become
 \code{<cleaned folder>/<study ID>/<session>/<name>.h5}, where the session is the subfolder path below the study ID (lowercase, spaces as \code{_}).
 
-\textbf{The case tables have to be there first}: \code{<cleaned folder>/_cases/cases.csv} and \code{blocks.csv} (Section 3.1). Every file gets its lead targets and a \code{case_status} from them, so \code{clean.py} won't start without them. For a cohort with no case tables add \code{--no-cases}. Each file holds:
+\textbf{The case tables have to be there first}: \code{<cleaned folder>/_cases/cases.csv} and \code{blocks.csv} (Section 3.1). Every file gets its lead targets and a \code{case_status} from them, so \code{clean.py} won't start without them. For a cohort with no case tables add \code{--no-cases}. For uh, put \code{_cases/contacts.csv} in too, since that's where the contact coordinates come from. \code{clean.py} still runs without it, but every uh file comes out with no coordinates, so \code{clean_block} prints a warning once per run and the files say \code{coord_status} = \code{no_contacts_csv}. Put \code{_cases/dnu_channels.csv} (the lab's do-not-use list) in as well: with \code{cases.csv} there, \code{clean.py} stops without it unless you add \code{--no-dnu} (or \code{--no-cases}, for a cohort without case tables). Each file holds:
 \begin{itemize}
   \item the signals in volts, tagged by type (\textit{lfp, eeg, mer, emg, audio, accel, joystick, stim\_monitor, unknown}), with channel names where we know them; BrainVision recordings come split into one stream per channel type (\code{lead}, \code{ecog}, \code{emg}, \ldots)
   \item per-channel labels on TDT ecog/lead stores (\code{ecog_a1} \ldots\ \code{lead2_c8}, with the case's targets); a lead that was never implanted (single-lead cases, uh3023's GPi) keeps its channels as \code{lead2_not_implanted}, and TDT blocks from a stage 2 folder (uh3005) mark the strip channels \code{ecog_*_not_placed}
@@ -98,6 +98,8 @@ The raw folder can be the whole inventory, one patient, or one surgery folder. E
 \end{itemize}
 
 Blocks that are already cleaned get skipped, so \textbf{adding a new patient is the same command}. A file is only skipped if it opens and was made by the current \code{CLEAN_VERSION} (\code{clean_dbs/version.py}); a file that won't open or comes from an older version is cleaned again, and \code{--force} cleans everything again. A recording copied under more than one number folder is cleaned once, and the other copies are listed in the report as \code{duplicate} or \code{conflict}.
+
+\textbf{Editing a case table doesn't make a file stale.} A file only counts as out of date when \code{CLEAN_VERSION} goes up, so a fix to \code{cases.csv}, \code{blocks.csv} or \code{contacts.csv} only reaches the files cleaned after it. To get the fix into files that are already there, clean them again with \code{--force} (pointing at just that patient's raw folder is enough), or wait for the next version bump.
 
 \begin{careful}{The CLEAN\_VERSION rule}
 Whenever a code change changes what goes into a cleaned file (a new or renamed field, different values, a different flag), add 1 to \code{CLEAN_VERSION} in \code{clean_dbs/version.py} in the same commit. Otherwise the next run skips every old file and the cleaned set ends up a mix of old and new. Changes that leave the \code{.h5} the same (speed, messages, docs) don't need a bump. Add a line to the version list in the README too: 1 = first numbered version; 2 = typed BrainVision streams, marker meanings, \code{/sidecars}, \code{rail} on every stream, BrainVision start time from the \code{.vmrk}, settings stores typed \textit{stim\_params}, \code{lead2_not_implanted} and stage 2 labels.
@@ -121,7 +123,8 @@ Every lead and ECoG channel in a cleaned file says what it is, right next to the
 \begin{itemize}
   \item \textbf{Contact numbering} is the lab's 1--8 for every lead: 1 = bottom ring, 2/3/4 = lower segments, 5/6/7 = upper segments (5 above 2, 6 above 3, 7 above 4), 8 = top ring. On a Medtronic SenSight lead that's levels 0, 1a--c, 2a--c, 3. Which way each segment faces isn't recorded.
   \item \textbf{ECoG}: anterior strip = 1--6, posterior = 7--12 (OR sheets). \textbf{TDT leads}: lead 1 = channels 13--20, lead 2 = 21--28, worked out from impedance and stim in the data because the rig wiring isn't written down; \code{channel_source} says so. Lead 1 is the lead implanted and stimulated first. Stage 2 BrainVision has the STN lead on DBS1--8 and GPi on DBS9--16.
-  \item \textbf{Contact coordinates}: \code{channel_x}, \code{channel_y}, \code{channel_z} (mm), \code{channel_position} and the stream's \code{coord_space} say where each lead contact was during that recording, from the lab's Brainlab reconstructions (\code{_cases/contacts.csv}). Space: Brainlab ACPC in the patient's own hemisphere (+x right, +y anterior, +z superior). Only the final position is imaged; inching blocks get it slid along the lead to their depth. A lead not yet in the brain gets NaN. So far 18 uh patients have reconstructions.
+  \item \textbf{Contact coordinates}: \code{channel_x}, \code{channel_y}, \code{channel_z} (mm), \code{channel_position} and the stream's \code{coord_space} say where each lead contact was during that recording, from the lab's Brainlab reconstructions (\code{_cases/contacts.csv}). Space: Brainlab ACPC in the patient's own hemisphere (+x right, +y anterior, +z superior). Only the final position is imaged; inching blocks get it slid along the lead to their depth. A lead not yet in the brain gets NaN. Only streams with lead channels get these fields, so an ecog or emg stream has none. So far 18 uh patients have reconstructions. \code{coord_status} in the info says which case a file is: \code{recon} (the patient is in \code{contacts.csv}), \code{no_recon} (the table was there but the patient isn't in it) or \code{no_contacts_csv} (there was no \code{_cases/contacts.csv} when it was cleaned, so nothing was looked up).
+  \item \textbf{Do not use}: \code{channel_dnu} (1 = don't use it) and the stream's \code{dnu_list} say which channels the lab marked do not use in that recording (bad or noisy contacts, contacts still in the cannula, bad ECoG or EMG), from \code{_cases/dnu_channels.csv}. \code{dnu_list} is \code{none} when the recording isn't on the list, so then nothing is known. The data itself isn't changed.
   \item \textbf{MER gain}: TDT microelectrode streams carry \code{analog_gain} = 4000 (AlphaOmega analog output), so electrode volts = data / 4000. The AO-to-TDT routing isn't documented, so check before comparing MER to LFP amplitudes.
 \end{itemize}
 
@@ -134,7 +137,9 @@ addpath("<path to clean_dbs>/matlab")
 r = clean_dbs_load("<cleaned folder>/uh3021/stage1/clinical_dbs1.h5", "types", {"lfp"}, "t1", 10, "t2", 20);
 x = r.streams.ecos.data;     % channels x samples, single, volts
 \end{codebox}
-Only the window you ask for is read from disk, so this is fast even on 1\,GB files. Flags (like \code{r.flags.saturation_ecos}) always cover the whole recording. \code{r.stim} is the stim table (one entry per pulse inside the window, text columns as cell arrays), \code{r.info} has every info attribute (including \code{duration_header} and \code{case_status}) and \code{r.provenance} has \code{clean_version}.
+Only the window you ask for is read from disk, so this is fast even on 1\,GB files. Flags (like \code{r.flags.saturation_ecos}) always cover the whole recording. \code{r.stim} is the stim table (one entry per pulse inside the window, text columns as cell arrays), \code{r.info} has every info attribute (including \code{duration_header}, \code{case_status} and \code{coord_status}) and \code{r.provenance} has \code{clean_version}.
+
+In Python, \code{load_type("<cleaned file>.h5", "lfp")} (from \code{clean_dbs}) gives every lfp stream in a file with its data, \code{fs}, channel labels (\code{channel_names}, \code{channel_group}, \ldots) and contact coordinates, the same per-channel fields \code{clean_dbs_load} gives.
 
 % =============================================================================
 \section{Reading raw files from MATLAB through Python}
@@ -158,6 +163,9 @@ MATLAB only converts one level at a time, so you need a \code{struct()} at each 
 \code{<patient>/<stage>/<block>.h5} (uh/UG), \code{<study ID>/<session>/<name>.h5} (other cohorts) & one cleaned recording (signals, events, stim table, flags, notes, provenance) \\
 \code{_cases/cases.csv} & one row per patient from the OR sheets: dual or single, hemisphere, targets, ECoG, EMG \\
 \code{_cases/blocks.csv} & one row per recording from the OR sheets: stage, target, leads in place, stim contacts, depth, notes. The stage keeps a stage 1 and a stage 2 recording with the same name apart (ug3007 erps01) \\
+\code{_cases/contacts.csv} & where each lead contact is, from the Brainlab reconstructions (uh only so far). Without it the uh files get no contact coordinates \\
+\code{_cases/dnu_channels.csv} & channels the lab marked do not use, per recording, built by \code{scripts/make_dnu_table.py} from the lab's sheet (uh stage 1 so far) \\
+\code{_cases/dnu_block_fixes.csv} & hand-checked fixes for sheet rows whose recording name matches no recording (typos, notes); the lab's sheet stays untouched \\
 \code{clean_report.csv} & every recording from the last run: cleaned, skipped, recleaned, duplicate, conflict, failed or not run, and why \\
 \code{_about/} & this guide \\
 \bottomrule

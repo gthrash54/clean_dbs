@@ -47,6 +47,10 @@ def test_plain_mode_statuses(tmp_path):
     (out / "_cases" / "dnu_channels.csv").unlink() #case tables but no do-not-use list: refuses too, unless told it's on purpose
     p = run(SCRIPTS / "clean.py", raw, out)
     assert p.returncode != 0 and "dnu_channels.csv" in p.stderr
+    other = tmp_path / "out_other_cohort" #case tables there but no do-not-use list: --no-cases (another cohort) still runs
+    add_cases(other)
+    (other / "_cases" / "dnu_channels.csv").unlink()
+    assert "dnu_channels.csv" not in run(SCRIPTS / "clean.py", raw, other, "--no-cases").stderr
     assert run(SCRIPTS / "clean.py", raw, tmp_path / "out_nodnu_check", "--no-cases", "--no-dnu").returncode == 1
     add_cases(out)
     p = run(SCRIPTS / "clean.py", raw, out)

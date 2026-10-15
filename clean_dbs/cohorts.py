@@ -14,7 +14,7 @@ COHORTS = {
            "folders":"<id>/stageN surgery/<.vhdr>", "names_seen":"lfp_baseline, lfp_pre, lfp_lesion, mer, mer_stim, macrostim, erpassay, sdcurve, buzz",
            "notes":"4 digit IDs (UG3005); 'lesion' recordings suggest a lesioning case"},
     "dlpfc": {"layout":"session", "modalities":"bv", "project":"DLPFC stimulation with scalp EEG: rest (eyes open/closed), iTBS, paired pulses, bursts, cortical stim and AX-CPT, pre and post DBS",
-              "folders":"files at <id>/, some in task data/axcpt/ieeg/, task data/motif protocol/, intraop/, preop/, eeg/",
+              "folders":"files at <id>/, some in task data/axcpt/ieeg/, task data/motif protocol/, intraop/, preop/, post op/, eeg/",
               "names_seen":"baseline, rest, rest_eyesopen/closed, exp#_predbs/postdbs, itbs, pp, burstpp, corticalstim, #ma_probing, mepthreshold, practice, task#, simon",
               "notes":"~150 IDs, 3 or 4 digits, some lowercase folder names; BPP and AXCPT-### folders can sit inside an ID"},
     "bi": {"layout":"session", "modalities":"bv", "project":"postop follow-up stim and LFP: per-contact recordings, monopolar review, ARIE best/worst, home settings, capsular, ramp, ERPs",
@@ -114,14 +114,16 @@ CONDITIONS = [
     (r"(?<![\d])\d+-\d+(?![\d-])", "contact_pair"),
 ]
 #state of the patient or visit, separate from the condition, joined with ";" when several apply
+#[ _-]? lets a two-word state be written as one word, or with _, - or a space between ("post op", "postop" and "post_op" are all on Box)
 STATES = [
     (r"asleep|anesth|precedex", "asleep"),
     (r"awake", "awake"),
-    (r"pre_?dbs", "pre_dbs"),
-    (r"post_?dbs", "post_dbs"),
-    (r"pre_?op(?!en)", "preop"), #not "impedencetest_preopening" (before opening, intraop)
-    (r"off_?meds", "off_meds"),
-    (r"(?<![a-z])on_?meds", "on_meds"),
+    (r"pre[ _-]?dbs", "pre_dbs"),
+    (r"post[ _-]?dbs", "post_dbs"),
+    (r"pre[ _-]?op(?!en)", "preop"), #not "impedencetest_preopening" (before opening, intraop)
+    (r"post[ _-]?op(?!en)", "postop"), #after surgery (DLPFC "post op" folders), kept apart from post_dbs
+    (r"off[ _-]?meds", "off_meds"),
+    (r"(?<![a-z])on[ _-]?meds", "on_meds"),
     (r"intraop", "intraop"),
     (r"(\d+) ?months?", "followup_{0}mo"),
 ]
