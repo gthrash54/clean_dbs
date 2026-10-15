@@ -12,7 +12,7 @@ parser.add_argument("cleaned_root", help="top of the cleaned set, the tables are
 parser.add_argument("data_root", help="raw data, one folder per study ID (e.g. ~/DBS Data)")
 parser.add_argument("--box", help="Box raw data folder as mounted (e.g. ~/Box/UAB DBS Data/UAB DBS Raw Data); needed for stim checks and blocks that aren't local")
 parser.add_argument("--crosswalk", help="crosswalk.csv (study_id, block, box_path), local only")
-parser.add_argument("--cache", default=str(Path.home() / "clean_dbs" / "clean_dbs_crosscheck_tmp"), help="folder for cached per-block results")
+parser.add_argument("--cache", default=str(Path.home() / "Code" / "clean_dbs" / "clean_dbs_crosscheck_tmp"), help="folder for cached per-block results")
 parser.add_argument("--no-stim", action="store_true", help="skip the Box reads, leads and block checks only")
 parser.add_argument("--write", action="store_true", help="add the columns to the tables (a backup copy goes in _cases/backup_<time>/ first); without it, only prints the counts")
 args = parser.parse_args()
