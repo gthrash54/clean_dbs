@@ -13,4 +13,6 @@
 #5: inching blocks named without the underscore (uh3002 increment1depth3) get their depth's contact coordinates, not the final ones
 #6: an implanted lead never plugged into the amplifier (cases.csv note "<target> lead never connected", uh3016 GPi) is labeled
 #   lead<N>_not_connected with no target
-CLEAN_VERSION = 6
+#7: per-channel channel_dnu (1 = the lab marked it do not use: bad contacts, contacts still in the cannula) and stream attribute dnu_list,
+#   from _cases/dnu_channels.csv (scripts/make_dnu_table.py builds it from the lab's "UH3 or notes - data to not use.xlsx")
+CLEAN_VERSION = 7

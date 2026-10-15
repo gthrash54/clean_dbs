@@ -31,6 +31,7 @@ def add_cases(out, status="conflict"):
     (out / "_cases").mkdir(parents=True, exist_ok=True)
     #capital study ID like on Box, lowercase folder: the match has to ignore case
     pd.DataFrame([{"study_id":"UH9999", "implant":"dual", "target1":"STN", "target2":"GPi", "ecog":"", "status":status}]).to_csv(out / "_cases" / "cases.csv", index=False)
+    pd.DataFrame(columns=["study_id", "stage", "block", "channel", "source"]).to_csv(out / "_cases" / "dnu_channels.csv", index=False)
 
 
 def report(out):
@@ -42,6 +43,11 @@ def test_plain_mode_statuses(tmp_path):
     p = run(SCRIPTS / "clean.py", raw, out)
     assert p.returncode != 0 and "_cases" in p.stderr #no case tables: refuses to start
     assert run(SCRIPTS / "clean.py", raw, tmp_path / "out_nocases", "--no-cases").returncode == 1 #runs, but a block failed
+    add_cases(out)
+    (out / "_cases" / "dnu_channels.csv").unlink() #case tables but no do-not-use list: refuses too, unless told it's on purpose
+    p = run(SCRIPTS / "clean.py", raw, out)
+    assert p.returncode != 0 and "dnu_channels.csv" in p.stderr
+    assert run(SCRIPTS / "clean.py", raw, tmp_path / "out_nodnu_check", "--no-cases", "--no-dnu").returncode == 1
     add_cases(out)
     p = run(SCRIPTS / "clean.py", raw, out)
     assert p.returncode == 1 #the block with no .tev failed, so the run says so

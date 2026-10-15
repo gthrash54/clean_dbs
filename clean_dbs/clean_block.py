@@ -10,6 +10,7 @@ import pandas as pd
 from clean_dbs.stim_events import stim_events, bv_clock_time
 from clean_dbs.markers import label_bv
 from clean_dbs.coords import contact_coords
+from clean_dbs.dnu import dnu_channels
 from clean_dbs.cohorts import cohort_of
 from clean_dbs import privacy
 
@@ -53,6 +54,12 @@ def clean_block(block_dir, out_root, window_mb=WINDOW_MB, force=False):
             if space:
                 s["channel_x"], s["channel_y"], s["channel_z"], s["channel_position"] = xs, ys, zs, positions
                 s["coord_space"] = space
+        #channels the lab marked do not use in this recording (bad contacts, contacts still in the cannula), from _cases/dnu_channels.csv;
+        #dnu_list says whether the recording was on the list at all ("none" = not listed, so nothing is known), see dnu.py
+        listed_as = describe_block(block_dir)
+        s["channel_dnu"], listed = dnu_channels(out_root, listed_as["patient"], listed_as.get("stage", ""), listed_as["block"],
+                                                s.get("channel_names"), s["channels"], s["type"])
+        s["dnu_list"] = listed or "none"
         if s["type"] == "mer" and not is_bv: #AlphaOmega MER comes into the TDT ADC after the Neuro Omega analog out (total gain 4000, manual
             s["analog_gain"] = 4000.0        #v1.4.6 p183/202): electrode volts = data / analog_gain. Data left as recorded; routing unconfirmed
     #the video stays outside the .h5 (too big, and video tools cant read it from inside); record where it is, Cam1 lines frames up with the data

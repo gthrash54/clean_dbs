@@ -25,6 +25,7 @@ def save_h5(result, out_path, source_dir):
       /streams/<name>/channels   channel numbers
       /streams/<name>/channel_x, channel_y, channel_z, channel_position + attr coord_space: contact coordinates (lead channels, when recon exists)
       /streams/<name> attr analog_gain: tdt mer streams, electrode volts = data / analog_gain
+      /streams/<name>/channel_dnu (1 = the lab marked it do not use) + attr dnu_list (where that came from, "none" = recording not listed)
       /streams/<name>/channel_names, channel_group, channel_target, channel_contact, channel_source (+ brainvision: channel_subtype,
                                  channel_side, channel_muscle, channel_units): what each channel is (e.g. lead1_c3 / lead1 / STN / 3), and where that came from
       /streams/<name>            attributes: fs, start_time, device, units, type, subtype, rail (amplifier ceiling in volts, NaN = unknown)
@@ -94,9 +95,11 @@ class StreamWriter:
             for key in s:
                 if key in ("channel_x", "channel_y", "channel_z"): #contact coordinates are numbers (NaN = unknown)
                     _write_array(g, key, np.asarray(s[key], dtype=np.float64))
+                elif key == "channel_dnu": #1 = the lab marked this channel do not use (dnu.py)
+                    _write_array(g, key, np.asarray(s[key], dtype=np.int8))
                 elif key.startswith("channel_"): #h5py needs its own string type, plain numpy text arrays dont save
                     g.create_dataset(key, data=np.asarray([str(v) for v in s[key]], dtype=object), dtype=h5py.string_dtype())
-            for key in ("coord_space", "analog_gain"): #only some streams have these
+            for key in ("coord_space", "analog_gain", "dnu_list"): #only some streams have these
                 if key in s:
                     g.attrs[key] = s[key] if isinstance(s[key], float) else str(s[key])
             g.attrs["fs"] = float(s["fs"])

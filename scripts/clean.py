@@ -22,6 +22,7 @@ parser.add_argument("--chunk", type=int, default=1, help="manifest rows per task
 parser.add_argument("--merge-reports", metavar="OUT_FOLDER", help="combine <out>/_reports/*.csv into <out>/clean_report.csv (needs --manifest)")
 parser.add_argument("--force", action="store_true", help="clean every block again, even ones already cleaned by this version")
 parser.add_argument("--no-cases", action="store_true", help="run without <out>/_cases/cases.csv (cohorts with no case tables); targets stay blank")
+parser.add_argument("--no-dnu", action="store_true", help="run without <out>/_cases/dnu_channels.csv (the lab's do-not-use list); every channel_dnu is 0 and dnu_list says none")
 parser.add_argument("--allow-dirty", action="store_true", help="let --manifest run on code with uncommitted changes (the files can't be traced to a commit)")
 args = parser.parse_args()
 
@@ -151,6 +152,10 @@ else:
 #the targets and case_status in every file come from the case tables, so a missing table would quietly leave them all blank
 if not (Path(out_folder) / "_cases" / "cases.csv").is_file() and not args.no_cases:
     sys.exit(f"no _cases/cases.csv in the out folder; copy _cases (cases.csv, blocks.csv) in first, or add --no-cases for a cohort without case tables")
+if (Path(out_folder) / "_cases" / "cases.csv").is_file() and not (Path(out_folder) / "_cases" / "dnu_channels.csv").is_file() and not args.no_dnu:
+    #without it every file would quietly say "not listed", the same as a recording the lab never marked
+    sys.exit("no _cases/dnu_channels.csv in the out folder; copy it in with the other case tables (scripts/make_dnu_table.py builds it), "
+             "or add --no-dnu to clean without the lab's do-not-use list")
 
 rows = []
 for n, block in enumerate(blocks):

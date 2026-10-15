@@ -12,6 +12,7 @@ dependencies = ["tdt", "numpy", "mne", "h5py", "pandas", "tzdata"] #tzdata: Wind
 
 [project.optional-dependencies]
 dev = ["pytest"] #only needed to run the tests
+sheets = ["openpyxl"] #only needed to read the lab's .xlsx sheets (scripts/make_dnu_table.py)
 
 [tool.setuptools]
 packages = ["clean_dbs"]
