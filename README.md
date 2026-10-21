@@ -17,7 +17,7 @@ uv venv --python 3.12
 uv pip install -e .
 ```
 
-That makes a private Python for the toolbox in a folder called `.venv` and installs the toolbox into it, along with what it needs (tdt, numpy, mne, h5py). The `-e` means edits to the code take effect right away, no reinstall. You only do this once.
+That makes a private Python for the toolbox in a folder called `.venv` and installs the toolbox into it, along with what it needs (tdt, numpy, mne, h5py). The `-e` means edits to the code take effect right away, no reinstall.
 
 Every time you open a new terminal to use the toolbox, switch that Python on first:
 
@@ -200,7 +200,6 @@ They use small made-up files, so no recordings are needed.
 ## Things that will trip you up
 
 - **Wrong folder for TDT.** Point at a single block (like `clinical_dbs1`), not `stage1 surgery`. It'll tell you if you get this wrong.
-- **Incomplete copies.** A lot of the local copies only have the small index files and are missing the actual signal (`.tev` for TDT, `.eeg` for BrainVision). Box has the full recordings. It'll tell you which file is missing.
 - **Everything is in volts.** BrainVision files store microvolts, and some older TDT blocks (uh3002, uh3003) store whole numbers in µV or mV. The readers convert all of it, so every rig matches. Multiply by 1e6 when you want µV for a plot.
 - **Some older microelectrode channels are basically unusable.** On uh3002 the spike and micro/macro LFP stores were saved as whole millivolts, so they only take a few flat values. That's how they were recorded, the code can't get the detail back.
 - **Marker codes mean different things in different cohorts.** For BrainVision, `markers.py` reads each S/R code as a TTL line going up and down and decides per recording: a line up for a pulse width (60-240 µs) is a stim pulse, a line up 0.1-40 ms with many widths is a TTL-coded stim trial, and a line held 100 ms (the Buzzy vibration) or a fixed-width trigger is never called stim. Every marker in the cleaned file says its `type`, `meaning` and the `evidence`. Anything we couldn't check says `unknown`.
