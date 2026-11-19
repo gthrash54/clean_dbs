@@ -6,6 +6,74 @@ Both readers give back the same thing, so whatever you write on top of them work
 
 If something breaks or doesn't make sense, message me (Garrett Thrash, garrettthrash54@gmail.com).
 
+## Quick start
+
+You can try it without any recordings. In a fresh virtual environment:
+
+```
+pip install git+https://github.com/gthrash54/clean_dbs
+```
+
+Then run this from an empty folder. It makes a small fake BrainVision recording in `demo_raw/`, cleans it into `demo_clean/`, and averages the signal around each stim pulse:
+
+```python
+from pathlib import Path
+import h5py
+import numpy as np
+from clean_dbs import clean_block, load_type
+
+# 1. A fake BrainVision recording: 8 lead contacts (DBS1-8), 10 s at 10 kHz, in microvolts.
+#    A stim pulse every 50 ms, marked like the lab's stimulator sync (S 15 up, S 13 down one sample later),
+#    each followed by a small 300 Hz response in 5 uV of noise.
+fs, n = 10_000, 100_000
+pulses = np.arange(5_000, n - 1_000, 500)  # sample of each pulse
+t = np.arange(150) / fs
+response = 20 * np.sin(2 * np.pi * 300 * t) * np.exp(-t / 0.004)
+data = np.random.default_rng(0).normal(0, 5, (8, n))
+for p in pulses:
+    data[:, p + 10:p + 160] += response  # starts 1 ms after the pulse
+
+folder = Path("demo_raw/demo/stage2 surgery")  # <patient>/<stage> folders, like the lab's raw data
+folder.mkdir(parents=True, exist_ok=True)
+(folder / "rec.vhdr").write_text(
+    "Brain Vision Data Exchange Header File Version 1.0\n[Common Infos]\nCodepage=UTF-8\n"
+    "DataFile=rec.eeg\nMarkerFile=rec.vmrk\nDataFormat=BINARY\nDataOrientation=MULTIPLEXED\n"
+    f"NumberOfChannels=8\nSamplingInterval={1e6 / fs:g}\n[Binary Infos]\nBinaryFormat=IEEE_FLOAT_32\n"
+    "[Channel Infos]\n" + "".join(f"Ch{k}=DBS{k},,1,µV\n" for k in range(1, 9)), encoding="utf-8")
+data.T.astype("<f4").tofile(folder / "rec.eeg")
+markers = "".join(f"Mk{2 * i + 2}=Stimulus,S 15,{p + 1},1,0\nMk{2 * i + 3}=Stimulus,S 13,{p + 2},1,0\n"
+                  for i, p in enumerate(pulses))
+(folder / "rec.vmrk").write_text(
+    "Brain Vision Data Exchange Marker File, Version 1.0\n[Common Infos]\nCodepage=UTF-8\nDataFile=rec.eeg\n"
+    "[Marker Infos]\nMk1=New Segment,,1,1,0,20240101120000000000\n" + markers, encoding="utf-8")
+
+# 2. Clean it: one .h5 with the channels labeled, the data in volts, and a stim table made from the markers
+h5 = clean_block(folder / "rec.vhdr", "demo_clean")
+print(h5)
+
+# 3. Load it back and average contact 1 over the 20 ms after each stim pulse
+lead = load_type(h5, "lfp")["lead"]
+print(lead["channel_names"], lead["channel_group"][0], lead["units"])
+with h5py.File(h5, "r") as f:
+    stim = f["stim/time"][:]  # seconds
+onsets = np.round((stim - lead["start_time"]) * lead["fs"]).astype(int)
+avg = np.mean([lead["data"][0, k:k + 200] for k in onsets], axis=0) * 1e6  # uV
+peak = np.abs(avg).argmax()
+print(f"{len(stim)} pulses; the average peaks at {avg[peak]:.1f} uV, {1e3 * peak / lead['fs']:.1f} ms after the pulse")
+```
+
+It prints:
+
+```
+demo_clean/demo/stage2/rec.h5
+['dbs1', 'dbs2', 'dbs3', 'dbs4', 'dbs5', 'dbs6', 'dbs7', 'dbs8'] lead1 V
+188 pulses; the average peaks at 17.2 uV, 1.8 ms after the pulse
+```
+
+`clean_block` read DBS1-8 as lead 1, contacts 1-8, converted microvolts to volts, and called `S 15` a stim pulse because its line stayed high only for a pulse width (see `markers.py`; `confirmed` is 0 in `/stim`, since `demo` isn't a cohort with a checked marker rule). The fake response peaks at 16.3 uV, 1.8 ms after each pulse, so the average finds it at the right time, with a little noise left over.
+
+`clean_block` cleans one recording. To clean a whole folder of real recordings, use `scripts/clean.py` (below), which needs the case tables. `pip install` gives you the package only; for `scripts/`, `matlab/` and the tests, get a copy of this repository and follow the setup below.
+
 ## Setup (one time)
 
 You need two things: a copy of this `clean_dbs` folder, and [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs Python and the packages for you.
